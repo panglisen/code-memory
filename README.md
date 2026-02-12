@@ -309,6 +309,8 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [ ] **Web UI 可视化** — 知识图谱浏览器，可视化 facts 关联和时间线
 - [ ] **自动记忆衰减** — 基于访问频率和时间自动调整事实优先级
 - [ ] **多用户/团队共享** — 支持团队级知识库，个人记忆与团队记忆分层
+- [ ] **工作流集成** — 集成一些比较成熟的规范开发工具：bmad
+- [ ] **超级工厂** — 实现全自动开发、review、测试
 - [ ] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
 
 > 欢迎通过 [Issues](https://github.com/panglisen/code-memory/issues) 提出建议或参与讨论
