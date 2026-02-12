@@ -304,7 +304,6 @@ python3 ~/.claude/scripts/extract-schema.py \
 
 ## 致谢
 
-- [OpenClaw](https://github.com/PrajnaAvidya/openclaw) — 混合检索参数调优和知识提炼思路的启发来源
 - RRF 算法参考: Cormack, Clarke & Butt (2009) "Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods"
 
 ## License
