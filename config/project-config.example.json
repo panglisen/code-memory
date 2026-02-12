@@ -1,0 +1,22 @@
+{
+  "project_name_map": {
+    "my-backend-parent": "backend-api",
+    "my-frontend-app": "frontend"
+  },
+  "ignored_projects": ["mac", "git-repo"],
+  "domain_hints": {
+    "app_user": {
+      "label": "用户",
+      "keywords": ["用户表", "会员", "账号"]
+    },
+    "app_order": {
+      "label": "订单",
+      "keywords": ["订单表", "购买", "支付"]
+    }
+  },
+  "special_prefixes": [],
+  "source_labels": {
+    "/path/to/project-a": "project-a",
+    "/path/to/project-b": "project-b"
+  }
+}
