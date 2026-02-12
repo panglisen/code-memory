@@ -175,7 +175,7 @@ echo ""
 echo "## 7. 刷新搜索索引"
 echo ""
 
-if command -v python3 &> /dev/null && [ -f "$HOME/.claude/scripts/memory-search.py" ]; then
+if [ -f "$HOME/.claude/scripts/memory-search.py" ]; then
     python3 "$HOME/.claude/scripts/memory-search.py" --rebuild 2>&1
     echo ""
 else
