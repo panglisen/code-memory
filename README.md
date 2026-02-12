@@ -1,4 +1,4 @@
-# claude-memory
+# code-memory
 
 基于文件系统的 Claude Code 三层记忆系统，零外部服务依赖。
 
@@ -47,8 +47,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/panglisen/claude-memory.git
-cd claude-memory
+git clone https://github.com/panglisen/code-memory.git
+cd code-memory
 ```
 
 ### 2. 复制文件到 `~/.claude/`
@@ -113,7 +113,7 @@ python3 ~/.claude/scripts/memory-search.py --rebuild
 ## 目录结构
 
 ```
-claude-memory/
+code-memory/
 ├── README.md                          # 本文档
 ├── LICENSE                            # MIT
 ├── .gitignore
