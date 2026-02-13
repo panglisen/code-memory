@@ -44,71 +44,72 @@
 
 ## 快速开始
 
-### 1. 克隆仓库
+### 一键安装
 
 ```bash
 git clone https://github.com/panglisen/code-memory.git
 cd code-memory
+bash install.sh
 ```
 
-### 2. 复制文件到 `~/.claude/`
+脚本会自动完成:
+- 复制脚本、斜杠命令、加载规则到 `~/.claude/`
+- 创建记忆目录结构
+- 从模板初始化 `MEMORY.md` 和 `config.json` (已有文件不覆盖)
+- 合并 Hooks 到 `~/.claude/settings.json` (已有配置不覆盖)
+- 检查依赖并验证安装
+
+安装完成后:
 
 ```bash
+# 1. 编辑填入你的偏好
+vim ~/.claude/memory/MEMORY.md
+
+# 2. (可选) 配置项目映射
+vim ~/.claude/memory/config.json
+
+# 3. (可选) 安装向量搜索依赖
+pip install fastembed  # ~200MB，启用 BM25 + 向量 RRF 混合搜索
+
+# 4. 构建搜索索引
+python3 ~/.claude/scripts/memory-search.py --rebuild
+```
+
+卸载: `bash install.sh --uninstall` (记忆数据保留，需手动删除)
+
+<details>
+<summary>手动安装 (不使用 install.sh)</summary>
+
+```bash
+git clone https://github.com/panglisen/code-memory.git
+cd code-memory
+
 # 脚本
 mkdir -p ~/.claude/scripts/lib
 cp scripts/*.py scripts/*.sh ~/.claude/scripts/
 cp scripts/lib/*.jq ~/.claude/scripts/lib/
+chmod +x ~/.claude/scripts/*.sh ~/.claude/scripts/*.py
 
 # 斜杠命令
 mkdir -p ~/.claude/commands
 cp commands/*.md ~/.claude/commands/
 
-# 加载规则 (复制到 rules/ 目录，Claude Code 会自动读取)
+# 加载规则
 mkdir -p ~/.claude/rules
 cp rules/memory-loader.md ~/.claude/rules/
 
 # 初始化记忆目录
 mkdir -p ~/.claude/memory/{daily,sessions,areas/{projects,patterns,tools}}
-```
 
-### 3. 配置 Hooks
+# 模板文件
+cp templates/MEMORY.md ~/.claude/memory/MEMORY.md
+cp config/project-config.example.json ~/.claude/memory/config.json
 
-将 `config/settings.example.json` 中的 hooks 部分合并到你的 `~/.claude/settings.json`:
-
-```bash
-# 查看示例配置
+# Hooks (手动合并到你的 settings.json)
 cat config/settings.example.json
 ```
 
-手动将 `hooks` 字段合并到你已有的 `~/.claude/settings.json` 中。如果你还没有该文件，可以直接复制:
-
-```bash
-cp config/settings.example.json ~/.claude/settings.json
-```
-
-### 4. 初始化记忆文件
-
-```bash
-# 从模板创建 MEMORY.md (编辑填入你的偏好)
-cp templates/MEMORY.md ~/.claude/memory/MEMORY.md
-
-# (可选) 配置项目映射
-cp config/project-config.example.json ~/.claude/memory/config.json
-# 编辑 config.json 填入你的项目名映射
-```
-
-### 5. 验证安装
-
-```bash
-# 测试搜索脚本
-python3 ~/.claude/scripts/memory-search.py --help
-
-# (可选) 安装向量搜索依赖
-pip install fastembed  # ~200MB，含 ONNX Runtime + bge 模型
-
-# 构建搜索索引
-python3 ~/.claude/scripts/memory-search.py --rebuild
-```
+</details>
 
 ## 目录结构
 
@@ -116,6 +117,7 @@ python3 ~/.claude/scripts/memory-search.py --rebuild
 code-memory/
 ├── README.md                          # 本文档
 ├── LICENSE                            # MIT
+├── install.sh                         # 一键安装/卸载脚本
 ├── .gitignore
 ├── docs/
 │   └── architecture.md                # 三层架构设计文档
@@ -311,7 +313,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [ ] **多用户/团队共享** — 支持团队级知识库，个人记忆与团队记忆分层
 - [ ] **工作流集成** — 集成一些比较成熟的规范开发工具：bmad
 - [ ] **超级工厂** — agent集群模式下的多角色全自动开发
-- [ ] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
+- [x] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
 
 > 欢迎通过 [Issues](https://github.com/panglisen/code-memory/issues) 提出建议或参与讨论
 
