@@ -313,6 +313,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [ ] **多用户/团队共享** — 支持团队级知识库，个人记忆与团队记忆分层
 - [ ] **工作流集成** — 集成一些比较成熟的规范开发工具：bmad
 - [ ] **超级工厂** — agent集群模式下的多角色全自动开发
+- [ ] **提取sql扩展** — 扩展从mybatis的xml中提取sql
 - [x] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
 
 > 欢迎通过 [Issues](https://github.com/panglisen/code-memory/issues) 提出建议或参与讨论
