@@ -284,7 +284,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 
 ### 特性
 
-- **分表折叠** — 自动识别 `user_main_1402` 类分表，折叠为逻辑表
+- **分表折叠** — 自动识别 `travel_1` 类分表，折叠为逻辑表
 - **前缀分组** — 按表名前缀自动分组，生成独立的 schema 文件
 - **ast-grep 代码分析** — 从 `@Select/@Insert/@Update/@Delete` 注解中提取 SQL
 - **sqlglot 解析** — 精确提取表名和 JOIN 关系，正则降级兜底
