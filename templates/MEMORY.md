@@ -34,7 +34,7 @@
 
 ## 避坑经验
 
-<!-- 由 /memory-avoid 命令和周期性整理更新 -->
+<!-- 由 /memory-avoid 命令、session-summary 自动知识提取和周期性整理更新 -->
 
 ## 最佳实践
 

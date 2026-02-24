@@ -62,8 +62,9 @@ areas/
 
 **会话摘要** (`sessions/{id}.md`):
 - 由 Stop Hook 触发 LLM (Haiku) 生成
-- 从 JSONL transcript 提取对话 → LLM 提炼关键知识点
+- 从 JSONL transcript 提取对话 → LLM 生成 JSON (摘要 + 知识提取)
 - 单个文件从 ~1MB 原始 transcript 压缩为 ~2KB 摘要
+- JSON 模式输出: 摘要 + 规则 + 避坑经验，自动分发到各目标文件
 - 格式: 主题 + 关键知识点 + 涉及文件 + 决策记录
 
 ### Layer 3: 隐性知识 (`MEMORY.md`)
@@ -142,9 +143,18 @@ PostToolUse (Edit|Write)
 Stop / SessionEnd
     → session-summary.sh
     → 从 JSONL 提取对话 (jq)
-    → LLM 摘要 (Haiku, 30s 超时)
-    → 保存到 sessions/
-    → 索引到每日笔记
+    → 判断模式:
+       ├─ JSON 模式 (AUTO_EXTRACT=true 且对话 > 500字符):
+       │  → LLM 生成 JSON (摘要 + knowledge)
+       │  → 验证 JSON → 分发写入:
+       │     ├─ sessions/{id}.md  ← 格式化 Markdown 摘要
+       │     ├─ rules.md          ← 提取的开发规范 (去重)
+       │     ├─ MEMORY.md         ← 避坑经验 (去重)
+       │     └─ daily/            ← 增强版每日笔记
+       └─ Markdown 模式 (短对话或关闭提取):
+          → LLM 生成纯 Markdown 摘要
+          → 保存到 sessions/
+          → 索引到每日笔记
 ```
 
 ### 周期任务
@@ -170,6 +180,49 @@ auto-extract-facts.py
     → LLM (Haiku) 生成 1-3 条原子事实
     → 验证 + 去重 → 写入 facts.json
 ```
+
+### 会话知识自动提取 (session-summary.sh JSON 模式)
+
+session-summary.sh 的 JSON 模式会从每次会话中自动提取结构化知识:
+
+**LLM 输出 JSON 结构:**
+
+```json
+{
+  "summary": {
+    "topic": "一句话主题",
+    "key_points": ["要点1", "要点2"],
+    "files": ["被编辑的文件"],
+    "decisions": ["技术决策"],
+    "todos": ["待办事项"]
+  },
+  "knowledge": {
+    "has_knowledge": true,
+    "project": "识别的项目名",
+    "rules": [
+      {"category": "编码规范", "rule": "规则描述"}
+    ],
+    "avoidances": ["避坑经验描述"]
+  }
+}
+```
+
+**分发写入逻辑:**
+
+1. **sessions/{id}.md** — `format_summary_markdown()` 将 JSON 格式化为可读的 Markdown
+2. **rules.md** — `write_rules()` 将 rules 按 category 分区写入项目 rules.md (去重: `grep -qF`)
+3. **MEMORY.md** — `write_avoidances()` 将 avoidances 追加到"避坑经验"区块 (去重: 前30字符匹配)
+4. **daily/{date}.md** — `write_daily_entry()` 生成增强版每日笔记条目 (含主题、要点、知识提取标记)
+
+**知识提取条件:**
+- `has_knowledge: true` 仅当会话中出现规范纠正、踩坑修复、最佳实践发现
+- 闲聊、简单问答 → `has_knowledge: false`，不触发知识写入
+- 避免 LLM 编造不存在的知识
+
+**降级策略:**
+- JSON 解析失败 → 降级为纯文本摘要保存
+- LLM 超时 (45s) → 保存原始对话文本
+- 对话太短 (< 500字符) → 仅 Markdown 模式，不提取知识
 
 ## 数据格式
 

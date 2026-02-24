@@ -36,7 +36,7 @@
 
 - **三层记忆架构** — 知识图谱 + 时间线日志 + 隐性知识，按需加载节省上下文
 - **RRF 混合搜索** — BM25 关键词 + 向量语义双路检索，Reciprocal Rank Fusion 融合
-- **Hook 驱动自动化** — 文件编辑自动记录每日笔记，会话结束自动生成 LLM 摘要
+- **Hook 驱动自动化** — 文件编辑自动记录每日笔记，会话结束自动生成摘要 + 知识提取分发
 - **斜杠命令** — `/memory-add`, `/memory-learn`, `/memory-avoid`, `/memory-summarize`
 - **DB Schema 提取** — ast-grep + sqlglot 从 Java 代码提取 JOIN/DAO，MySQL 表结构按前缀分组
 - **零外部服务** — 纯文件系统 + SQLite，不依赖任何云服务或数据库
@@ -123,7 +123,7 @@ code-memory/
 │   └── architecture.md                # 三层架构设计文档
 ├── scripts/
 │   ├── memory-search.py               # RRF 混合搜索 (BM25 + 向量)
-│   ├── session-summary.sh             # Stop Hook: 会话摘要
+│   ├── session-summary.sh             # Stop Hook: 会话摘要 + 知识提取
 │   ├── extract-memory.sh              # PostToolUse Hook: 编辑记录
 │   ├── weekly-consolidate.sh          # 周期整理
 │   ├── auto-extract-facts.py          # 自动事实提取 (LLM 驱动)
@@ -161,16 +161,25 @@ Claude Code 编辑文件
     → 同一分钟内去重合并
 ```
 
-**2. 会话结束时 (Stop Hook)**
+**2. 会话结束时 (Stop Hook) — 摘要 + 自动知识提取**
 
 ```
 Claude Code 会话结束
     → session-summary.sh
     → 从 JSONL transcript 提取对话
-    → LLM (Haiku) 生成摘要
-    → 保存到 sessions/{id}.md (~2KB)
-    → 在每日笔记中添加索引
+    → LLM (Haiku) 生成 JSON (摘要 + 知识)
+    → 分发写入:
+       ├─ sessions/{id}.md    ← 格式化 Markdown 摘要
+       ├─ rules.md            ← 提取的开发规范 (去重)
+       ├─ MEMORY.md           ← 避坑经验 (去重)
+       └─ daily/YYYY-MM-DD.md ← 增强版每日笔记
 ```
+
+知识提取条件:
+- `CLAUDE_AUTO_EXTRACT=true` (默认开启)
+- 对话字符数 > 500 (`CLAUDE_SUMMARIZE_MIN_CHARS`)
+- 对话中出现规范纠正、踩坑修复、最佳实践等内容时 `has_knowledge=true`
+- 闲聊/简单问答不触发知识提取 (避免噪音)
 
 **3. 周期整理 (手动或 cron)**
 
@@ -225,6 +234,14 @@ weekly-consolidate.sh
   }
 }
 ```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CLAUDE_SESSION_SUMMARIZE` | `true` | 会话摘要开关，设为 `false` 回退到保存原始对话文本 |
+| `CLAUDE_AUTO_EXTRACT` | `true` | 自动知识提取开关，设为 `false` 只生成 Markdown 摘要 |
+| `CLAUDE_SUMMARIZE_MIN_CHARS` | `500` | 最小对话字符数，低于此值跳过知识提取 (仍生成摘要) |
 
 ### 项目映射配置
 
@@ -315,6 +332,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [ ] **超级工厂** — agent集群模式下的多角色全自动开发
 - [ ] **提取sql扩展** — 扩展从mybatis的xml中提取sql
 - [x] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
+- [x] **会话知识自动提取** — Stop Hook 自动提取规范和避坑经验，分发写入 rules.md 和 MEMORY.md
 
 > 欢迎通过 [Issues](https://github.com/panglisen/code-memory/issues) 提出建议或参与讨论
 
