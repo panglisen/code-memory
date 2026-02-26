@@ -8,6 +8,7 @@ code-memory 是一个基于文件系统的 Claude Code 记忆系统。设计目�
 2. **节省上下文** — 按需加载，只在需要时读取相关文件
 3. **自动化驱动** — Hook 机制自动记录，减少手动维护负担
 4. **优雅降级** — 每一层都有降级方案，核心功能不依赖可选组件
+5. **自进化闭环** — 经验有效性追踪 + 跨会话信号分析 + 能力自动生成
 
 ## 三层模型
 
@@ -90,6 +91,9 @@ areas/
 | 涉及项目架构 | `projects/{项目}/summary.md` |
 | 涉及数据库 | `projects/shared-db/schema-index.md` |
 | 提到具体表名 | `prefix-map.json` → `schema/{前缀}.md` |
+| 用户问"记忆系统状态" | `memory-feedback.py report` |
+| 用户问"循环问题" | `signal-analyzer.py recurring` |
+| 用户问"能力生成" | `capability-generator.py --status` |
 
 优点: 零延迟、精确命中
 局限: 只能处理预定义的触发词
@@ -117,7 +121,8 @@ BM25 (SQLite FTS5)  ──┐
 **RRF 融合:**
 - 公式: `score(d) = Σ 1/(k + rank_i)`，k=60
 - 不依赖分数量纲，对小数据集鲁棒
-- Jaccard trigram 去重（阈值 0.83，参考 lss）
+- 工业标准（Azure AI Search、Elasticsearch 都使用）
+- 实现简单，无需调参
 
 **降级策略:**
 - fastembed 已安装 → 自动启用混合搜索
@@ -129,6 +134,125 @@ BM25 (SQLite FTS5)  ──┐
 通过 `--mode vector` 使用纯语义搜索，适合:
 - BM25 关键词搜索无结果时
 - 用自然语言描述模糊概念（如"用户认证流程"找到"JWT 校验逻辑"）
+
+## 自进化系统 (Evolution)
+
+### 概述
+
+自进化系统为记忆系统增加了反馈闭环，由三个模块组成:
+
+1. **经验有效性追踪** (`memory-feedback.py`) — 记录经验被引用的频率和效果
+2. **跨会话信号分析** (`signal-analyzer.py`) — 检测循环出现的问题模式
+3. **能力自动生成** (`capability-generator.py`) — 从循环模式自动生成 Skill/Command
+
+数据存储在 `~/.claude/memory/evolution/` 目录下，与原有三层记忆解耦。
+
+### 反馈闭环
+
+经验被引用时，`memory-feedback.py` 记录引用事件到 append-only 审计日志:
+
+```
+经验被引用 → ref 事件 (experience_id, session_id, context)
+会话结束 → outcome 事件 (session_id, success/failed, corrections_count)
+```
+
+**有效性评分算法:**
+
+1. **Laplace 平滑**: `p = (success + 1) / (success + fail + 2)`
+   - 避免零次引用时评分为 0
+   - 少量数据时趋向 0.5 (不确定)
+
+2. **指数衰减**: `w = 0.5^(age_days / half_life)`
+   - `half_life` 默认 90 天
+   - 老旧经验自然衰减
+
+3. **联合评分**: `decay_value = p × w`
+   - `decay_value < 0.3` 为低效候选，可标记 archived
+   - `decay_value > 0.7` 为高效经验，优先展示
+
+### 信号分析与循环检测
+
+`signal-analyzer.py` 从每次会话摘要中提取 8 种结构化信号:
+
+| 信号类型 | 描述 |
+|----------|------|
+| `error` | 错误和异常 |
+| `correction` | 纠正和修复 |
+| `capability_gap` | 能力缺口 |
+| `recurring_issue` | 循环问题 |
+| `environment_issue` | 环境问题 |
+| `dependency_issue` | 依赖问题 |
+| `performance_issue` | 性能问题 |
+| `security_issue` | 安全问题 |
+
+**循环检测算法:**
+
+```
+信号提取 → 按信号类型汇总 → 频率统计 (8 会话窗口)
+    → count >= 3: 自动升级为 HIGH 优先级
+    → count >= 5: 升级为 CRITICAL
+    → 连续失败串检测: 最后 N 个会话连续失败时标记
+```
+
+**循环模式状态:**
+- `active` — 活跃，持续监控
+- `addressed` — 已处理，降低优先级
+- `suppressed` — 已抑制 (count >= 3 在 8 会话窗口)
+
+### 能力自动生成
+
+`capability-generator.py` 在满足门控条件时，从循环模式自动生成 Claude Code Skill 或 Command:
+
+**门控条件 (全部满足才生成):**
+
+1. `CAPABILITY_GENERATION` 环境变量不为 `false`
+2. 距上次生成 >= 24 小时 (冷却期)
+3. 至少 2 个 count >= 2 的未处理循环模式
+4. 最近 5 个会话 >= 60% 成功率 (系统稳定时才生成)
+
+**生成流程:**
+
+```
+门控检查通过
+    → 收集候选循环模式
+    → LLM (Haiku) 合成 Skill YAML + 执行步骤
+    → 写入 ~/.claude/skills/{skill-name}/SKILL.md
+    → 更新 ~/.claude/rules/auto-capabilities.md 索引
+    → 记录到 evolution/capabilities.jsonl 审计日志
+```
+
+**Skill 自动发现:**
+- 生成的 Skill YAML description 包含明确触发条件词
+- `auto-capabilities.md` 每次会话自动加载
+- Claude 通过触发条件词自动匹配并调用
+
+**成本控制:**
+- 反馈和信号分析阶段: 纯 SQL + 正则，零 LLM 调用
+- 能力生成: 仅门控通过时调用，使用轻量级模型 (Haiku)
+- 估算月成本 < $2
+
+### Evolution 数据格式
+
+```
+evolution/
+├── audit.jsonl                # 经验引用事件 (append-only)
+├── capabilities.jsonl         # 能力生成事件 (append-only)
+├── generator_state.json       # 生成器状态 (冷却期、上次生成时间)
+└── signal_report_latest.md    # 最新信号分析报告
+```
+
+**audit.jsonl 记录格式:**
+
+```json
+{"timestamp": "2026-02-26T10:00:00", "event_type": "ref", "experience_id": "avoidance:abc123", "session_id": "sess-001", "context": "引用上下文"}
+{"timestamp": "2026-02-26T11:00:00", "event_type": "outcome", "session_id": "sess-001", "outcome": "success", "corrections": 0}
+```
+
+**capabilities.jsonl 记录格式:**
+
+```json
+{"timestamp": "2026-02-26T12:00:00", "event_type": "generation", "capability_name": "auto-env-fix", "type": "Skill", "trigger": "environment_issue", "pattern_count": 3}
+```
 
 ## 自动化流程
 
@@ -149,12 +273,15 @@ Stop / SessionEnd
        │  → 验证 JSON → 分发写入:
        │     ├─ sessions/{id}.md  ← 格式化 Markdown 摘要
        │     ├─ rules.md          ← 提取的开发规范 (去重)
-       │     ├─ MEMORY.md         ← 避坑经验 (去重)
+       │     ├─ MEMORY.md         ← 避坑经验 (trigram 去重)
        │     └─ daily/            ← 增强版每日笔记
        └─ Markdown 模式 (短对话或关闭提取):
           → LLM 生成纯 Markdown 摘要
           → 保存到 sessions/
           → 索引到每日笔记
+    → 后台非阻塞:
+       ├─ memory-feedback.py outcome ← 记录会话结果
+       └─ signal-analyzer.py extract ← 提取会话信号
 ```
 
 ### 周期任务
@@ -167,6 +294,8 @@ weekly-consolidate.sh (每周日)
     → 知识图谱状态检查
     → 搜索索引刷新
     → 自动事实提取 (auto-extract-facts.py)
+    → 跨会话信号分析 (signal-analyzer.py)
+    → 能力自动生成 (capability-generator.py)
     → 过期文件清理 (sessions 30天, daily 90天)
 ```
 
@@ -211,7 +340,7 @@ session-summary.sh 的 JSON 模式会从每次会话中自动提取结构化知�
 
 1. **sessions/{id}.md** — `format_summary_markdown()` 将 JSON 格式化为可读的 Markdown
 2. **rules.md** — `write_rules()` 将 rules 按 category 分区写入项目 rules.md (去重: `grep -qF`)
-3. **MEMORY.md** — `write_avoidances()` 将 avoidances 追加到"避坑经验"区块 (去重: 前30字符匹配)
+3. **MEMORY.md** — `write_avoidances()` 将 avoidances 追加到"避坑经验"区块 (去重: trigram Jaccard + Containment)
 4. **daily/{date}.md** — `write_daily_entry()` 生成增强版每日笔记条目 (含主题、要点、知识提取标记)
 
 **知识提取条件:**
@@ -258,6 +387,15 @@ CREATE TABLE chunks_meta (rowid INTEGER PRIMARY KEY, path TEXT, line_start INTEG
 
 -- 向量嵌入 (可选)
 CREATE TABLE embeddings (chunk_rowid INTEGER PRIMARY KEY, embedding BLOB, model TEXT, content_hash TEXT);
+
+-- 经验引用追踪 (自进化系统)
+CREATE TABLE experience_refs (id INTEGER PRIMARY KEY, experience_id TEXT, session_id TEXT, timestamp TEXT, context TEXT);
+
+-- 会话结果记录
+CREATE TABLE session_outcomes (id INTEGER PRIMARY KEY, session_id TEXT, timestamp TEXT, outcome TEXT, corrections INTEGER);
+
+-- 经验有效性统计视图
+CREATE TABLE experience_effectiveness (experience_id TEXT PRIMARY KEY, total_refs INTEGER, success_refs INTEGER, fail_refs INTEGER, laplace_score REAL, last_ref TEXT);
 ```
 
 ## 设计决策
@@ -282,3 +420,17 @@ CREATE TABLE embeddings (chunk_rowid INTEGER PRIMARY KEY, embedding BLOB, model 
 - CPU 推理足够快（~5ms/条）
 - 模型首次运行自动下载到 `~/.cache/fastembed/`
 - 可选依赖，不影响基础功能
+
+### 为什么用 Laplace 平滑而非简单计数?
+
+- 简单计数 (success/total) 在样本量小时不可靠
+- Laplace 平滑 `(s+1)/(s+f+2)` 在零次引用时给出 0.5 (不确定)
+- 结合指数衰减避免老旧经验永远高权重
+- 算法简单，零 LLM 调用
+
+### 为什么用 append-only 审计日志?
+
+- 保留完整的变更历史供审计追溯
+- 避免就地修改导致数据丢失
+- JSONL 格式便于流式处理和增量分析
+- 文件系统原生支持 append 操作

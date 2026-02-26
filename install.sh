@@ -60,7 +60,8 @@ if [ "$1" = "--uninstall" ]; then
     # 脚本
     for f in memory-search.py session-summary.sh extract-memory.sh \
              weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
-             migrate-sessions.sh; do
+             migrate-sessions.sh memory-feedback.py signal-analyzer.py \
+             capability-generator.py cleanup-avoidances.sh; do
         if [ -f "$SCRIPTS_DIR/$f" ]; then
             rm "$SCRIPTS_DIR/$f"
             ok "删除 scripts/$f"
@@ -69,7 +70,8 @@ if [ "$1" = "--uninstall" ]; then
     [ -f "$SCRIPTS_DIR/lib/extract-conversation.jq" ] && rm "$SCRIPTS_DIR/lib/extract-conversation.jq" && ok "删除 scripts/lib/extract-conversation.jq"
 
     # 斜杠命令
-    for f in memory-add.md memory-learn.md memory-avoid.md memory-summarize.md; do
+    for f in memory-add.md memory-learn.md memory-avoid.md memory-summarize.md \
+             memory-health.md memory-signals.md memory-generate.md; do
         if [ -f "$COMMANDS_DIR/$f" ]; then
             rm "$COMMANDS_DIR/$f"
             ok "删除 commands/$f"
@@ -77,7 +79,12 @@ if [ "$1" = "--uninstall" ]; then
     done
 
     # 规则
-    [ -f "$RULES_DIR/memory-loader.md" ] && rm "$RULES_DIR/memory-loader.md" && ok "删除 rules/memory-loader.md"
+    for f in memory-loader.md auto-capabilities.md; do
+        if [ -f "$RULES_DIR/$f" ]; then
+            rm "$RULES_DIR/$f"
+            ok "删除 rules/$f"
+        fi
+    done
 
     echo ""
     warn "记忆数据 (~/.claude/memory/) 已保留，如需删除请手动执行:"
@@ -105,7 +112,16 @@ PYTHON_CMD=""
 if command -v python3 &>/dev/null; then
     PYTHON_CMD="python3"
     HAS_PYTHON=true
-    ok "python3 ($(python3 --version 2>&1 | awk '{print $2}'))"
+    PYTHON_VER=$(python3 --version 2>&1 | awk '{print $2}')
+    ok "python3 ($PYTHON_VER)"
+
+    # 检查 Python 版本 >= 3.9
+    PYTHON_MAJOR=$(echo "$PYTHON_VER" | cut -d. -f1)
+    PYTHON_MINOR=$(echo "$PYTHON_VER" | cut -d. -f2)
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 9 ]); then
+        err "Python 3.9+ 必需，当前版本 $PYTHON_VER"
+        exit 1
+    fi
 elif command -v python &>/dev/null; then
     PYTHON_CMD="python"
     HAS_PYTHON=true
@@ -113,7 +129,7 @@ elif command -v python &>/dev/null; then
 fi
 
 if ! $HAS_PYTHON; then
-    err "Python 3.10+ 未安装 (必需)"
+    err "Python 3.9+ 未安装 (必需)"
     echo "  安装: https://www.python.org/downloads/"
     exit 1
 fi
@@ -150,7 +166,7 @@ info "创建目录结构..."
 mkdir -p "$SCRIPTS_DIR/lib"
 mkdir -p "$COMMANDS_DIR"
 mkdir -p "$RULES_DIR"
-mkdir -p "$MEMORY_DIR"/{daily,sessions,areas/{projects,patterns,tools}}
+mkdir -p "$MEMORY_DIR"/{daily,sessions,evolution,areas/{projects,patterns,tools}}
 
 ok "目录结构就绪"
 echo ""
@@ -160,7 +176,8 @@ info "安装脚本 → ~/.claude/scripts/"
 
 for f in memory-search.py session-summary.sh extract-memory.sh \
          weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
-         migrate-sessions.sh; do
+         migrate-sessions.sh memory-feedback.py signal-analyzer.py \
+         capability-generator.py cleanup-avoidances.sh; do
     copy_file "$SCRIPT_DIR/scripts/$f" "$SCRIPTS_DIR/$f"
 done
 copy_file "$SCRIPT_DIR/scripts/lib/extract-conversation.jq" "$SCRIPTS_DIR/lib/extract-conversation.jq"
@@ -173,7 +190,8 @@ echo ""
 # --- 3. 复制斜杠命令 ---
 info "安装斜杠命令 → ~/.claude/commands/"
 
-for f in memory-add.md memory-learn.md memory-avoid.md memory-summarize.md; do
+for f in memory-add.md memory-learn.md memory-avoid.md memory-summarize.md \
+         memory-health.md memory-signals.md memory-generate.md; do
     copy_file "$SCRIPT_DIR/commands/$f" "$COMMANDS_DIR/$f"
 done
 echo ""
@@ -181,6 +199,7 @@ echo ""
 # --- 4. 复制加载规则 ---
 info "安装加载规则 → ~/.claude/rules/"
 copy_file "$SCRIPT_DIR/rules/memory-loader.md" "$RULES_DIR/memory-loader.md"
+copy_file "$SCRIPT_DIR/rules/auto-capabilities.md" "$RULES_DIR/auto-capabilities.md"
 echo ""
 
 # --- 5. 初始化模板文件 ---
@@ -256,7 +275,8 @@ info "验证安装..."
 ERRORS=0
 
 # 检查关键文件
-for f in scripts/memory-search.py scripts/session-summary.sh scripts/extract-memory.sh; do
+for f in scripts/memory-search.py scripts/session-summary.sh scripts/extract-memory.sh \
+         scripts/memory-feedback.py scripts/signal-analyzer.py scripts/capability-generator.py; do
     if [ -f "$CLAUDE_DIR/$f" ]; then
         ok "$f"
     else
@@ -290,7 +310,7 @@ echo "后续步骤:"
 echo "  1. 编辑 ~/.claude/memory/MEMORY.md 填入你的偏好"
 echo "  2. 编辑 ~/.claude/memory/config.json 配置项目映射"
 echo "  3. (可选) pip install fastembed  # 启用向量搜索"
-echo "  4. 开始使用: 在 Claude Code 中输入 /memory-add 试试"
+echo "  4. 构建搜索索引: python3 ~/.claude/scripts/memory-search.py --rebuild"
 echo ""
 echo "卸载: bash $SCRIPT_DIR/install.sh --uninstall"
 echo ""

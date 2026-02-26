@@ -308,6 +308,31 @@ else
 fi
 echo ""
 
+echo "## 10b. 跨会话信号分析"
+echo ""
+
+if [ -f "$HOME/.claude/scripts/signal-analyzer.py" ]; then
+    python3 "$HOME/.claude/scripts/signal-analyzer.py" analyze --days 7 2>&1
+    python3 "$HOME/.claude/scripts/signal-analyzer.py" auto-escalate 2>&1
+else
+    echo "信号分析跳过 (signal-analyzer.py 不可用)"
+fi
+echo ""
+
+echo "## 10c. 能力自动生成"
+echo ""
+
+if [ -f "$HOME/.claude/scripts/capability-generator.py" ]; then
+    if [ "$1" = "--dry-run" ]; then
+        python3 "$HOME/.claude/scripts/capability-generator.py" --dry-run 2>&1
+    else
+        python3 "$HOME/.claude/scripts/capability-generator.py" 2>&1
+    fi
+else
+    echo "能力生成跳过 (capability-generator.py 不可用)"
+fi
+echo ""
+
 echo "## 11. MEMORY.md 状态"
 echo ""
 

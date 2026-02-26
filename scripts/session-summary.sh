@@ -21,6 +21,56 @@ MIN_CHARS_FOR_EXTRACT="${CLAUDE_SUMMARIZE_MIN_CHARS:-500}"  # 低于此字符数
 MAX_CONVERSATION_CHARS=30000  # 传给 LLM 的最大字符数
 SUMMARY_MODEL="haiku"  # 用 Haiku 做摘要，性价比最高
 CLAUDE_TIMEOUT=45  # claude CLI 超时秒数 (知识提取需要更多时间)
+MAX_AVOIDANCES_PER_SESSION=5  # 每会话避坑经验硬上限
+AVOIDANCE_BLOCKLIST="$HOME/.claude/scripts/lib/avoidance-blocklist.txt"  # 已工具化主题屏蔽词
+
+# 项目名规范化映射 (LLM/目录名 → 标准名)
+# 工作区名返回空字符串表示跳过 rules 写入
+# 使用 case 兼容 macOS bash 3.2 (不支持 declare -A)
+normalize_project_name() {
+    local raw="$1"
+    # 去除首尾空格
+    raw=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # 拒绝逗号分隔的组合名 (如 "project-a, project-b")
+    case "$raw" in
+        *,*) echo ""; return ;;
+    esac
+
+    # 从 config.json 读取项目名映射 (如果存在)
+    local config_file="$MEMORY_DIR/config.json"
+    if [ -f "$config_file" ] && command -v jq &>/dev/null; then
+        local mapped
+        mapped=$(jq -r --arg name "$raw" '.project_name_map[$name] // empty' "$config_file" 2>/dev/null)
+        if [ -n "$mapped" ]; then
+            echo "$mapped"
+            return
+        fi
+    fi
+
+    # 自动检测工作区: cwd/projects/ 下有多个子目录 → 当前目录是工作区不是项目
+    local cwd="${HOOK_CWD:-$PWD}"
+    local dir_name
+    dir_name=$(basename "$cwd")
+    if [ "$raw" = "$dir_name" ] && [ -d "$cwd/projects" ]; then
+        local subdir_count
+        subdir_count=$(find "$cwd/projects" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$subdir_count" -ge 2 ]; then
+            echo ""
+            return
+        fi
+    fi
+    # 其他项目名原样返回
+    echo "$raw"
+}
+
+# 避坑经验去重源: 所有可能包含 **避坑条目** 的文件
+# 新增规范文件时在此追加，源头抑制和写入去重共用此列表
+AVOIDANCE_DEDUP_SOURCES=(
+    "$MEMORY_FILE"
+    "$MEMORY_DIR/areas/projects"/*/rules.md
+    "$MEMORY_DIR/areas/patterns"/*/summary.md
+    "$HOME/.claude/rules/security.md"
+)
 
 # 从 stdin 读取 Hook 输入
 INPUT=$(cat)
@@ -102,7 +152,7 @@ extract_conversation() {
 # 用 LLM 生成会话摘要 (带超时保护)
 # 模式1 (AUTO_EXTRACT=true): 输出 JSON (摘要+知识)
 # 模式2 (AUTO_EXTRACT=false): 输出纯 Markdown 摘要
-# 输入: 对话文本, 项目名, use_json ("true"/"false")
+# 输入: 对话文本, 项目名
 # 输出: JSON 或 Markdown (stdout)
 # ============================================================
 generate_summary() {
@@ -119,8 +169,54 @@ generate_summary() {
         return 1
     fi
 
+    # 构建已有避坑主题列表，注入到 prompt 中抑制重复提取 (扫描所有去重源文件)
+    local existing_topics=""
+    if [ ${#AVOIDANCE_DEDUP_SOURCES[@]} -gt 0 ]; then
+        existing_topics=$(python3 -c "
+import re, sys, glob
+topics = []
+for path in sys.argv[1:]:
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith('- '):
+                    continue
+                # 匹配 **加粗** 格式 或 纯文本列表项的冒号前部分
+                m = re.search(r'\*\*(.*?)\*\*', line)
+                if m:
+                    topics.append(m.group(1)[:50])
+                else:
+                    # '- 纯文本描述：解释' 或 '- 纯文本描述 (日期)'
+                    text = re.sub(r'^- ', '', line)
+                    text = re.split(r'[：:]', text)[0].strip()
+                    if len(text) > 8:
+                        topics.append(text[:50])
+    except (FileNotFoundError, IsADirectoryError):
+        continue
+# 去重并限制数量
+seen = set()
+unique = []
+for t in topics:
+    key = t[:20]
+    if key not in seen:
+        seen.add(key)
+        unique.append(t)
+    if len(unique) >= 50:
+        break
+print('\n'.join('- ' + t for t in unique))
+" "${AVOIDANCE_DEDUP_SOURCES[@]}" 2>/dev/null) || true
+    fi
+
     local system_prompt
     if [ "$use_json" = "true" ]; then
+        local existing_topics_block=""
+        if [ -n "$existing_topics" ]; then
+            existing_topics_block="
+
+已有避坑经验（不要重复提取以下主题，如果会话中的避坑经验与下列任一条相似，则不要输出到 avoidances）:
+${existing_topics}"
+        fi
         system_prompt='你是一个会话摘要和知识提取器。从开发会话对话中提取摘要和可复用知识。
 
 输出格式: 严格输出合法 JSON。直接以 { 开头，以 } 结尾。
@@ -147,13 +243,14 @@ generate_summary() {
 }
 
 knowledge 提取规则:
-- has_knowledge: boolean 类型。仅当会话中出现了规范纠正、踩坑修复、最佳实践发现时为 true，否则为 false
+- has_knowledge: 仅当会话中出现了**全新的**规范纠正、踩坑修复、最佳实践发现时为 true
 - 闲聊、简单问答、无技术纠正的会话 → has_knowledge: false，rules 和 avoidances 为空数组
 - rules: 从纠正、规范讨论中提取的可复用规则，category 常见值: 编码规范、禁止项、架构分层、缓存规范、API 规范、数据库规范
-- avoidances: 踩过的坑、容易犯错的地方、需要特别注意的陷阱
+- avoidances: 踩过的坑、容易犯错的地方、需要特别注意的陷阱。**严格去重**: 如果经验与已有列表中的任一条相似，不要输出
+- avoidances 硬上限: 最多输出 5 条，超过时只保留最有价值的 5 条
 - 不要编造不存在的知识，只提取会话中明确出现的内容
 - 使用中文
-- 项目: '"$project"
+- 项目: '"$project"''"$existing_topics_block"
     else
         system_prompt='你是一个会话摘要提取器。从以下开发会话对话中提取关键知识点。
 
@@ -274,11 +371,12 @@ write_rules() {
     local knowledge_project
     knowledge_project=$(printf '%s' "$json" | jq -r '.knowledge.project // empty')
     # 优先使用 knowledge 中识别的项目名，fallback 到会话项目名
-    # 安全净化: 只保留安全字符，防止路径遍历
-    local target_project
-    target_project=$(printf '%s' "${knowledge_project:-$project}" | tr -cd 'a-zA-Z0-9._-')
+    local target_project="${knowledge_project:-$project}"
+
+    # 规范化项目名 (防止创建错误目录)
+    target_project=$(normalize_project_name "$target_project")
     if [ -z "$target_project" ]; then
-        echo "[Knowledge] 无效的项目名，跳过规则写入" >&2
+        echo "[Knowledge] 项目名为工作区或组合名，跳过 rules 写入" >&2
         return 0
     fi
 
@@ -316,9 +414,8 @@ RULESEOF
             continue
         fi
 
-        # 净化: 移除换行符和 shell 元字符
+        # 净化: 移除换行符 (LLM 输出可能包含多行)
         rule=$(printf '%s' "$rule" | tr '\n\r' '  ')
-        category=$(printf '%s' "$category" | tr '\n\r' '  ' | tr -d '$`\\')
 
         # 去重检查: 检查规则内容是否已存在
         if grep -qF "$rule" "$rules_file" 2>/dev/null; then
@@ -382,8 +479,23 @@ write_avoidances() {
         return 0
     fi
 
+    # 加载屏蔽词列表 (已工具化的主题)
+    local blocklist_keywords=""
+    if [ -f "$AVOIDANCE_BLOCKLIST" ]; then
+        blocklist_keywords=$(grep -v '^#' "$AVOIDANCE_BLOCKLIST" | grep -v '^$' | tr '\n' '|')
+        blocklist_keywords="${blocklist_keywords%|}"  # 去掉末尾 |
+    fi
+
     local i=0
+    local written_count=0
     while [ "$i" -lt "$avoidances_count" ]; do
+        # 硬上限检查
+        if [ "$written_count" -ge "$MAX_AVOIDANCES_PER_SESSION" ]; then
+            local remaining=$((avoidances_count - i))
+            echo "[Knowledge] 已达硬上限 ${MAX_AVOIDANCES_PER_SESSION} 条/会话，跳过剩余 ${remaining} 条" >&2
+            break
+        fi
+
         local avoidance
         avoidance=$(printf '%s' "$json" | jq -r ".knowledge.avoidances[$i] // empty")
 
@@ -395,9 +507,70 @@ write_avoidances() {
         # 净化: 移除换行符 (LLM 输出可能包含多行)
         avoidance=$(printf '%s' "$avoidance" | tr '\n\r' '  ')
 
-        # 去重: 全文匹配检查 (与 write_rules 保持一致)
-        if grep -qF "$avoidance" "$MEMORY_FILE" 2>/dev/null; then
-            echo "[Knowledge] 避坑经验已存在，跳过: $avoidance" >&2
+        # 屏蔽词检测: 已工具化的主题直接跳过
+        if [ -n "$blocklist_keywords" ]; then
+            if printf '%s' "$avoidance" | grep -qiE "$blocklist_keywords" 2>/dev/null; then
+                echo "[Knowledge] 已工具化主题，跳过: $avoidance" >&2
+                i=$((i + 1))
+                continue
+            fi
+        fi
+
+        # 去重: trigram 多策略 (Jaccard + 包含度 + 子串检测), 扫描所有去重源文件
+        local is_duplicate
+        is_duplicate=$(printf '%s' "$avoidance" | python3 -c "
+import sys, re
+def trigrams(s):
+    s = re.sub(r'\s+', '', s)
+    return set(s[i:i+3] for i in range(max(0, len(s)-2)))
+def jaccard(a, b):
+    if not a or not b: return 0.0
+    return len(a & b) / len(a | b)
+def containment(small, big):
+    if not small: return 0.0
+    return len(small & big) / len(small)
+def normalize(s):
+    return re.sub(r'\s+', '', s)
+
+new_text = sys.stdin.read().strip()
+new_norm = normalize(new_text)
+new_tri = trigrams(new_text)
+# 阈值说明: Jaccard 0.30 捕获同长度改写, Containment 0.55 捕获浓缩版改写
+# 扫描所有去重源文件 (AVOIDANCE_DEDUP_SOURCES)
+for filepath in sys.argv[1:]:
+    try:
+        with open(filepath, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith('- '):
+                    continue
+                # 匹配 **加粗** 格式 或 纯文本列表项的冒号前部分
+                m = re.search(r'\*\*(.*?)\*\*', line)
+                if m:
+                    existing_text = m.group(1)
+                else:
+                    text = re.sub(r'^- ', '', line)
+                    existing_text = re.split(r'[：:]', text)[0].strip()
+                    if len(existing_text) <= 8:
+                        continue
+                existing_tri = trigrams(existing_text)
+                existing_norm = normalize(existing_text)
+                if jaccard(new_tri, existing_tri) > 0.30:
+                    print('duplicate')
+                    sys.exit(0)
+                if containment(new_tri, existing_tri) > 0.55:
+                    print('duplicate')
+                    sys.exit(0)
+                if len(new_norm) > 10 and new_norm in existing_norm:
+                    print('duplicate')
+                    sys.exit(0)
+    except (FileNotFoundError, IsADirectoryError):
+        continue
+print('unique')
+" "${AVOIDANCE_DEDUP_SOURCES[@]}" 2>/dev/null) || is_duplicate="unique"
+
+        if [ "$is_duplicate" = "duplicate" ]; then
+            echo "[Knowledge] 避坑经验已存在(Jaccard匹配)，跳过: $avoidance" >&2
             i=$((i + 1))
             continue
         fi
@@ -406,38 +579,23 @@ write_avoidances() {
         # 使用 perl 环境变量传值，避免特殊字符问题
         AVOIDANCE_LINE="- **${avoidance}** ($DATE, auto)" \
             perl -i -0777 -pe 's/(^## 避坑经验\n(?:(?!^## ).)*)/$1$ENV{AVOIDANCE_LINE}\n/ms' "$MEMORY_FILE" 2>/dev/null
-        local insert_rc=$?
 
         # 修复格式: 确保每个 ## 标题前有空行
         perl -i -pe 'print "\n" if /^## / && defined($prev) && $prev !~ /^\s*$/; $prev = $_' "$MEMORY_FILE" 2>/dev/null
 
-        if [ $insert_rc -ne 0 ]; then
-            # perl 插入失败的 fallback: 直接追加到文件末尾
+        if [ $? -ne 0 ]; then
+            # perl 失败的 fallback: 直接追加到文件末尾
             printf '\n- **%s** (%s, auto)\n' "$avoidance" "$DATE" >> "$MEMORY_FILE"
         fi
 
         echo "[Knowledge] 避坑经验已写入 MEMORY.md: $avoidance" >&2
+        written_count=$((written_count + 1))
         i=$((i + 1))
     done
-}
 
-# ============================================================
-# 输出会话文件头部 (公共模板)
-# 输入: 标题类型 ("摘要" 或 "记录")
-# 输出: Markdown 头部 (stdout)
-# ============================================================
-write_session_header() {
-    local title_type="${1:-摘要}"
-    echo "# 会话${title_type}: $SESSION_ID"
-    echo ""
-    echo "- **项目**: $PROJECT"
-    echo "- **时间**: $DATE $TIME (最后更新)"
-    echo "- **工作目录**: ${HOOK_CWD:-$PWD}"
-    echo "- **原始大小**: ${FILE_SIZE_KB}KB (${TOTAL_LINES} 行)"
-    echo "- **原始文件**: \`$TRANSCRIPT_PATH\`"
-    echo ""
-    echo "---"
-    echo ""
+    if [ "$written_count" -gt 0 ]; then
+        echo "[Knowledge] 本会话共写入 ${written_count} 条避坑经验 (上限 ${MAX_AVOIDANCES_PER_SESSION})" >&2
+    fi
 }
 
 # ============================================================
@@ -518,7 +676,16 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                     # 1. 格式化 Markdown 摘要 → sessions/
                     FORMATTED_SUMMARY=$(format_summary_markdown "$CLEANED_JSON")
                     {
-                        write_session_header "摘要"
+                        echo "# 会话摘要: $SESSION_ID"
+                        echo ""
+                        echo "- **项目**: $PROJECT"
+                        echo "- **时间**: $DATE $TIME (最后更新)"
+                        echo "- **工作目录**: ${HOOK_CWD:-$PWD}"
+                        echo "- **原始大小**: ${FILE_SIZE_KB}KB (${TOTAL_LINES} 行)"
+                        echo "- **原始文件**: \`$TRANSCRIPT_PATH\`"
+                        echo ""
+                        echo "---"
+                        echo ""
                         printf '%s\n' "$FORMATTED_SUMMARY"
                     } > "$SESSION_FILE"
                     echo "[Memory] 会话摘要已保存: $SESSION_FILE" >&2
@@ -533,11 +700,37 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                     if [ "$IS_NEW_SESSION" = "true" ]; then
                         write_daily_entry "$CLEANED_JSON" "$SESSION_ID"
                     fi
+
+                    # 5. 后台记录会话结果 (非阻塞, 反馈闭环)
+                    if [ -n "$SESSION_ID" ] && [ -f "$HOME/.claude/scripts/memory-feedback.py" ]; then
+                        local has_errors_flag="0"
+                        printf '%s' "$CLEANED_JSON" | jq -e '.knowledge.avoidances | length > 0' >/dev/null 2>&1 && has_errors_flag="1"
+                        local corrections_count
+                        corrections_count=$(printf '%s' "$CLEANED_JSON" | jq -r '.knowledge.rules // [] | length' 2>/dev/null)
+                        python3 "$HOME/.claude/scripts/memory-feedback.py" outcome \
+                            --session-id "$SESSION_ID" --project "$PROJECT" \
+                            --has-errors "$has_errors_flag" --user-corrections "${corrections_count:-0}" 2>/dev/null &
+                    fi
+
+                    # 6. 后台提取信号 (非阻塞, 信号分析)
+                    if [ -n "$SESSION_ID" ] && [ -f "$HOME/.claude/scripts/signal-analyzer.py" ]; then
+                        python3 "$HOME/.claude/scripts/signal-analyzer.py" extract \
+                            --session-id "$SESSION_ID" --summary-file "$SESSION_FILE" 2>/dev/null &
+                    fi
                 else
                     # JSON 解析失败 → 降级为纯文本摘要
                     echo "[Memory] JSON 解析失败，降级为纯文本模式" >&2
                     {
-                        write_session_header "摘要"
+                        echo "# 会话摘要: $SESSION_ID"
+                        echo ""
+                        echo "- **项目**: $PROJECT"
+                        echo "- **时间**: $DATE $TIME (最后更新)"
+                        echo "- **工作目录**: ${HOOK_CWD:-$PWD}"
+                        echo "- **原始大小**: ${FILE_SIZE_KB}KB (${TOTAL_LINES} 行)"
+                        echo "- **原始文件**: \`$TRANSCRIPT_PATH\`"
+                        echo ""
+                        echo "---"
+                        echo ""
                         printf '%s\n' "$LLM_OUTPUT"
                     } > "$SESSION_FILE"
                     echo "[Memory] 会话摘要已保存 (JSON降级): $SESSION_FILE" >&2
@@ -554,7 +747,16 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
             else
                 # ===== Markdown 模式 (AUTO_EXTRACT=false 或对话太短) =====
                 {
-                    write_session_header "摘要"
+                    echo "# 会话摘要: $SESSION_ID"
+                    echo ""
+                    echo "- **项目**: $PROJECT"
+                    echo "- **时间**: $DATE $TIME (最后更新)"
+                    echo "- **工作目录**: ${HOOK_CWD:-$PWD}"
+                    echo "- **原始大小**: ${FILE_SIZE_KB}KB (${TOTAL_LINES} 行)"
+                    echo "- **原始文件**: \`$TRANSCRIPT_PATH\`"
+                    echo ""
+                    echo "---"
+                    echo ""
                     printf '%s\n' "$LLM_OUTPUT"
                 } > "$SESSION_FILE"
 
@@ -572,7 +774,16 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         else
             # 摘要失败，降级保存对话文本
             {
-                write_session_header "记录"
+                echo "# 会话记录: $SESSION_ID"
+                echo ""
+                echo "- **项目**: $PROJECT"
+                echo "- **时间**: $DATE $TIME (最后更新)"
+                echo "- **工作目录**: ${HOOK_CWD:-$PWD}"
+                echo "- **原始大小**: ${FILE_SIZE_KB}KB (${TOTAL_LINES} 行)"
+                echo "- **原始文件**: \`$TRANSCRIPT_PATH\`"
+                echo ""
+                echo "---"
+                echo ""
                 printf '%s\n' "$CONVERSATION" | head -200
             } > "$SESSION_FILE"
 
@@ -589,7 +800,16 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     else
         # ===== 降级模式: 保存对话文本 (非原始 JSONL) =====
         {
-            write_session_header "记录"
+            echo "# 会话记录: $SESSION_ID"
+            echo ""
+            echo "- **项目**: $PROJECT"
+            echo "- **时间**: $DATE $TIME (最后更新)"
+            echo "- **工作目录**: ${HOOK_CWD:-$PWD}"
+            echo "- **原始大小**: ${FILE_SIZE_KB}KB (${TOTAL_LINES} 行)"
+            echo "- **原始文件**: \`$TRANSCRIPT_PATH\`"
+            echo ""
+            echo "---"
+            echo ""
             if [ "$CONV_LENGTH" -gt 0 ]; then
                 printf '%s\n' "$CONVERSATION" | head -200
             else

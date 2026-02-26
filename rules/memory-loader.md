@@ -44,6 +44,10 @@
 | 使用特定工具遇到问题 | `tools/{工具名}/summary.md` |
 | 涉及数据库/SQL/DAO（泛泛提及） | `projects/shared-db/schema-index.md` |
 | 提到具体表名 | 先查 `projects/shared-db/prefix-map.json` 定位前缀，再加载 `projects/shared-db/schema/{前缀}.md` |
+| 会话开始时（如存在） | `evolution/signal_report_latest.md` — 最新信号分析报告 |
+| 用户问"记忆系统状态" | 运行 `python3 ~/.claude/scripts/memory-feedback.py report` |
+| 用户问"循环问题" | 运行 `python3 ~/.claude/scripts/signal-analyzer.py recurring` |
+| 用户问"能力生成" | 运行 `python3 ~/.claude/scripts/capability-generator.py --status` |
 
 **二级: RRF 混合搜索 (Fallback)**
 
@@ -104,11 +108,22 @@ schema 统一存放在 `projects/shared-db/` 下，按表名前缀分组。
 | `sessions/*.md` | 仅当用户问"上次会话内容"或需要回溯具体对话 |
 | `facts.json` | 仅当 `summary.md` 信息不够需要细节时 |
 
+## 经验引用反馈
+
+每次从 MEMORY.md 或 rules.md 中实际引用某条经验辅助决策时，
+后台记录引用（不阻塞主流程）:
+```bash
+python3 ~/.claude/scripts/memory-feedback.py ref \
+    --experience-id "avoidance:<hash>" --session-id "<当前会话ID>" --context "引用上下文"
+```
+
 ## 记忆写入时机
 
 ### 自动写入 (Hooks 触发，不消耗 token)
 - 文件编辑后 → `extract-memory.sh` 更新每日笔记 (PostToolUse)
 - 会话结束时 → `session-summary.sh` 保存 transcript (Stop/SessionEnd)
+- 会话结束时 → `memory-feedback.py outcome` 记录会话结果 (由 session-summary.sh 后台调用)
+- 会话结束时 → `signal-analyzer.py extract` 提取会话信号 (由 session-summary.sh 后台调用)
 
 ### 手动写入 (用户触发，消耗 token)
 - `/memory-summarize` - 提取规范、知识、总结会话
@@ -133,11 +148,16 @@ schema 统一存放在 `projects/shared-db/` 下，按表名前缀分组。
 ```
 ~/.claude/memory/
 ├── MEMORY.md              # Layer 3: 隐性知识 ← 必加载
-├── .search-index.db       # BM25 + 向量混合索引 (SQLite FTS5 + fastembed, 自动维护)
+├── .search-index.db       # BM25 + 向量混合索引 + 反馈追踪表 (SQLite)
 ├── daily/                 # Layer 2: 每日笔记
 │   └── YYYY-MM-DD.md
 ├── sessions/              # Layer 2: 会话摘要 (LLM 提炼的知识点)
 │   └── {session-id}.md
+├── evolution/             # 自进化系统数据
+│   ├── audit.jsonl              # 经验引用 append-only 审计日志
+│   ├── capabilities.jsonl       # 能力生成审计日志
+│   ├── generator_state.json     # 能力生成器状态
+│   └── signal_report_latest.md  # 最新信号分析报告 (按需加载)
 └── areas/                 # Layer 1: 知识图谱
     ├── projects/          # 项目知识
     │   ├── {name}/
@@ -168,5 +188,7 @@ schema 统一存放在 `projects/shared-db/` 下，按表名前缀分组。
 4. 自动清理超过 30 天的会话文件
 5. 清理超过 90 天的每日笔记
 6. 标记过时的原子事实
+7. 跨会话信号分析 (循环问题检测)
+8. 能力自动生成 (从循环模式生成 Skill/Command)
 
 用法: `~/.claude/scripts/weekly-consolidate.sh [--dry-run]`
