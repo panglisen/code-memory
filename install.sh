@@ -61,7 +61,8 @@ if [ "$1" = "--uninstall" ]; then
     for f in memory-search.py session-summary.sh extract-memory.sh \
              weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
              migrate-sessions.sh memory-feedback.py signal-analyzer.py \
-             capability-generator.py cleanup-avoidances.sh; do
+             capability-generator.py cleanup-avoidances.sh \
+             rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh; do
         if [ -f "$SCRIPTS_DIR/$f" ]; then
             rm "$SCRIPTS_DIR/$f"
             ok "删除 scripts/$f"
@@ -177,7 +178,8 @@ info "安装脚本 → ~/.claude/scripts/"
 for f in memory-search.py session-summary.sh extract-memory.sh \
          weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
          migrate-sessions.sh memory-feedback.py signal-analyzer.py \
-         capability-generator.py cleanup-avoidances.sh; do
+         capability-generator.py cleanup-avoidances.sh \
+         rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh; do
     copy_file "$SCRIPT_DIR/scripts/$f" "$SCRIPTS_DIR/$f"
 done
 copy_file "$SCRIPT_DIR/scripts/lib/extract-conversation.jq" "$SCRIPTS_DIR/lib/extract-conversation.jq"
@@ -246,11 +248,17 @@ merge_hooks() {
         # 确保 hooks 对象存在
         .hooks //= {} |
 
+        # 合并 PreToolUse
+        .hooks.PreToolUse = ((.hooks.PreToolUse // []) + ($new_hooks.hooks.PreToolUse // [])) |
+
         # 合并 PostToolUse
         .hooks.PostToolUse = ((.hooks.PostToolUse // []) + ($new_hooks.hooks.PostToolUse // [])) |
 
-        # 合并 Stop
-        .hooks.Stop = ((.hooks.Stop // []) + ($new_hooks.hooks.Stop // [])) |
+        # 合并 SubagentStart
+        .hooks.SubagentStart = ((.hooks.SubagentStart // []) + ($new_hooks.hooks.SubagentStart // [])) |
+
+        # 合并 PreCompact
+        .hooks.PreCompact = ((.hooks.PreCompact // []) + ($new_hooks.hooks.PreCompact // [])) |
 
         # 合并 SessionEnd
         .hooks.SessionEnd = ((.hooks.SessionEnd // []) + ($new_hooks.hooks.SessionEnd // []))
@@ -276,7 +284,8 @@ ERRORS=0
 
 # 检查关键文件
 for f in scripts/memory-search.py scripts/session-summary.sh scripts/extract-memory.sh \
-         scripts/memory-feedback.py scripts/signal-analyzer.py scripts/capability-generator.py; do
+         scripts/memory-feedback.py scripts/signal-analyzer.py scripts/capability-generator.py \
+         scripts/rules-injector.sh scripts/rules-gate.sh scripts/schema-injector.sh; do
     if [ -f "$CLAUDE_DIR/$f" ]; then
         ok "$f"
     else

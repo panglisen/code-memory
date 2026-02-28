@@ -1,5 +1,25 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/rules-injector.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/rules-gate.sh"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -11,20 +31,30 @@
         ]
       }
     ],
-    "Stop": [
+    "SubagentStart": [
+      {
+        "matcher": "Plan|Explore|everything-claude-code:planner|everything-claude-code:architect",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/schema-injector.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/scripts/session-summary.sh"
+            "command": "~/.claude/scripts/pre-compact.sh"
           }
         ]
       }
     ],
     "SessionEnd": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",

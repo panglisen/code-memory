@@ -17,7 +17,8 @@
 │  └──────────────────────────────────────────────────┘    │
 │                                                          │
 │  ┌─ 自动写入 (Hooks) ──────────────────────────────┐    │
-│  │  PostToolUse → 每日笔记  |  Stop → 会话摘要     │    │
+│  │  PreToolUse → 规范注入  |  PostToolUse → 每日笔记│    │
+│  │  SubagentStart → Schema注入 | SessionEnd → 摘要  │    │
 │  └──────────────────────────────────────────────────┘    │
 │                                                          │
 │  ┌─ 自进化反馈 ────────────────────────────────────┐    │
@@ -47,6 +48,8 @@
 - **三层记忆架构** — 知识图谱 + 时间线日志 + 隐性知识，按需加载节省上下文
 - **RRF 混合搜索** — BM25 关键词 + 向量语义双路检索，Reciprocal Rank Fusion 融合
 - **Hook 驱动自动化** — 文件编辑自动记录每日笔记，会话结束自动生成摘要 + 知识提取分发
+- **规范无损注入** — PreToolUse Hook 通过 `additionalContext` 零浪费注入项目规范，Read 不被阻断
+- **Subagent Schema 注入** — SubagentStart Hook 向 Plan/Explore 等设计 agent 自动注入数据库 schema 索引
 - **自进化系统** — 经验有效性追踪 (Laplace 平滑 + 指数衰减)、跨会话信号分析 (循环问题检测)、能力自动生成 (从循环模式自动生成 Skill/Command)
 - **斜杠命令** — `/memory-add`, `/memory-learn`, `/memory-avoid`, `/memory-summarize`, `/memory-health`, `/memory-signals`, `/memory-generate`
 - **DB Schema 提取** — ast-grep + sqlglot 从 Java 代码提取 JOIN/DAO，MySQL 表结构按前缀分组
@@ -135,8 +138,12 @@ code-memory/
 │   └── architecture.md                # 三层架构设计文档
 ├── scripts/
 │   ├── memory-search.py               # RRF 混合搜索 (BM25 + 向量)
-│   ├── session-summary.sh             # Stop Hook: 会话摘要 + 知识提取
+│   ├── session-summary.sh             # SessionEnd Hook: 会话摘要 + 知识提取
 │   ├── extract-memory.sh              # PostToolUse Hook: 编辑记录
+│   ├── rules-injector.sh              # PreToolUse Hook (Read): 项目规范无损注入
+│   ├── rules-gate.sh                  # PreToolUse Hook (Edit|Write): 规范加载安全网
+│   ├── schema-injector.sh             # SubagentStart Hook: Schema 索引注入
+│   ├── pre-compact.sh                 # PreCompact Hook: 压缩前清除 flag 确保重新注入
 │   ├── weekly-consolidate.sh          # 周期整理 + 信号分析 + 能力生成
 │   ├── auto-extract-facts.py          # 自动事实提取 (LLM 驱动)
 │   ├── extract-schema.py              # DB Schema 提取 (ast-grep + sqlglot)
@@ -171,6 +178,44 @@ code-memory/
 ## 工作原理
 
 ### 自动化流程
+
+**0. 读取项目文件时 (PreToolUse Hook — Read)**
+
+```
+Claude Code 读取项目文件
+    → rules-injector.sh
+    → 检测文件路径属于哪个项目 (config.json 映射或目录名匹配)
+    → 首次: allow + additionalContext 注入规范 (零浪费，Read 正常执行)
+    → 后续: 静默放行 (同会话 flag 文件控制)
+```
+
+**0.5 编辑项目文件时 (PreToolUse Hook — Edit|Write)**
+
+```
+Claude Code 编辑项目文件
+    → rules-gate.sh (安全网)
+    → 检查规范是否已加载 (flag 文件)
+    → 已加载: 放行
+    → 未加载: deny，提示先 Read rules.md
+```
+
+**0.8 启动设计 Subagent 时 (SubagentStart Hook)**
+
+```
+Claude Code 启动 Plan/Explore/architect subagent
+    → schema-injector.sh
+    → 首次: 注入 schema 索引到 subagent 上下文
+    → 后续: 静默放行 (同会话只注入一次)
+```
+
+**0.9 上下文压缩前 (PreCompact Hook)**
+
+```
+Claude Code 触发上下文压缩
+    → pre-compact.sh
+    → 清除当前会话的 rules/schema flag 文件
+    → 压缩后下次 Read 项目文件时自动重新注入规范
+```
 
 **1. 文件编辑后 (PostToolUse Hook)**
 
@@ -264,15 +309,36 @@ weekly-consolidate.sh
 ```json
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [{"type": "command", "command": "~/.claude/scripts/rules-injector.sh"}]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{"type": "command", "command": "~/.claude/scripts/rules-gate.sh"}]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [{"type": "command", "command": "~/.claude/scripts/extract-memory.sh"}]
       }
     ],
-    "Stop": [
+    "SubagentStart": [
+      {
+        "matcher": "Plan|Explore|everything-claude-code:planner|everything-claude-code:architect",
+        "hooks": [{"type": "command", "command": "~/.claude/scripts/schema-injector.sh"}]
+      }
+    ],
+    "PreCompact": [
       {
         "matcher": "*",
+        "hooks": [{"type": "command", "command": "~/.claude/scripts/pre-compact.sh"}]
+      }
+    ],
+    "SessionEnd": [
+      {
         "hooks": [{"type": "command", "command": "~/.claude/scripts/session-summary.sh"}]
       }
     ]
@@ -299,6 +365,9 @@ weekly-consolidate.sh
   "project_name_map": {
     "my-backend-parent": "backend-api"
   },
+  "project_groups": {
+    "shared-java": ["backend-api", "worker-service"]
+  },
   "ignored_projects": ["mac", "git-repo"],
   "domain_hints": {
     "app_user": {"label": "用户", "keywords": ["用户表", "会员"]}
@@ -309,6 +378,7 @@ weekly-consolidate.sh
 ```
 
 - `project_name_map` — 代码仓库目录名到记忆系统项目名的映射
+- `project_groups` — 项目组定义，组内项目共享规范（如多个 Java 项目共享 `shared-java/rules.md`）
 - `ignored_projects` — 忽略的目录名（非代码项目）
 - `domain_hints` — Schema 提取时的业务域中文关键词映射
 - `special_prefixes` — 表名中包含下划线但应视为整体的前缀
@@ -384,6 +454,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [x] **自动记忆衰减** — 基于访问频率和时间自动调整事实优先级 (Laplace + 指数衰减)
 - [x] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
 - [x] **会话知识自动提取** — Stop Hook 自动提取规范和避坑经验，分发写入 rules.md 和 MEMORY.md
+- [x] **规范无损注入** — PreToolUse `additionalContext` 零浪费注入项目规范 + SubagentStart Schema 索引注入
 
 > 欢迎通过 [Issues](https://github.com/panglisen/code-memory/issues) 提出建议或参与讨论
 

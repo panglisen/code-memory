@@ -259,12 +259,36 @@ evolution/
 ### Hook 驱动
 
 ```
+PreToolUse (Read)
+    → rules-injector.sh
+    → 检测文件路径 → 项目名 (config.json 映射 or 目录名匹配)
+    → 首次: allow + additionalContext 注入规范
+    →   ├─ 读取 projects/{name}/rules.md
+    →   └─ 追加 project_groups 组规范 (如 shared-java/rules.md)
+    → 后续: 静默放行 (flag: /tmp/claude-rules-{sid}-{project})
+
+PreToolUse (Edit|Write)
+    → rules-gate.sh (安全网)
+    → 检查 flag 文件是否存在
+    → 已加载: 放行
+    → 未加载: deny + 提示先 Read rules.md
+
+SubagentStart (Plan|Explore|architect)
+    → schema-injector.sh
+    → 首次: 注入 shared-db/schema-index.md 到 subagent 上下文
+    → 后续: 静默放行 (flag: /tmp/claude-schema-{sid})
+
+PreCompact (*)
+    → pre-compact.sh
+    → 清除 /tmp/claude-rules-{sid}-* 和 /tmp/claude-schema-{sid}
+    → 压缩后下次 Read 项目文件时 rules-injector 自动重新注入
+
 PostToolUse (Edit|Write)
     → extract-memory.sh
     → 更新每日笔记
     → 去重: 同分钟同项目合并
 
-Stop / SessionEnd
+SessionEnd
     → session-summary.sh
     → 从 JSONL 提取对话 (jq)
     → 判断模式:
@@ -434,3 +458,23 @@ CREATE TABLE experience_effectiveness (experience_id TEXT PRIMARY KEY, total_ref
 - 避免就地修改导致数据丢失
 - JSONL 格式便于流式处理和增量分析
 - 文件系统原生支持 append 操作
+
+### 为什么用 additionalContext 而非 block+reason 注入规范?
+
+- **零浪费**: `block+reason` 会阻断 Read，Claude 需要重试一次才能读到文件内容。`additionalContext` 配合 `permissionDecision:"allow"` 让 Read 正常执行的同时注入规范
+- **API 对齐**: `hookSpecificOutput` 是 Claude Code Hooks 的官方新格式，旧的 `{"decision":"block"}` 已 deprecated
+- **一次调用 = 读文件 + 加载规范**: 大幅减少上下文浪费
+
+### 为什么用 SubagentStart 注入 Schema 而非 PreToolUse?
+
+- 设计阶段的 subagent (Plan/Explore/architect) 有独立的上下文窗口，无法看到主会话加载的信息
+- SubagentStart Hook 的 `additionalContext` 直接注入到 subagent 上下文中
+- schema 索引只需注入一次（同会话 flag 控制），subagent 就能按需 Read 详细 schema 文件
+- 比在主会话中预加载 schema 更节省上下文（只有用到 subagent 时才注入）
+
+### 为什么 project_groups 而非硬编码共享规范?
+
+- 不同用户有不同的项目组合（可能是 3 个 Java 项目共享，也可能是 Go + Python 混合）
+- `config.json` 的 `project_groups` 让用户自由定义哪些项目共享同一套规范
+- 脚本只需遍历 groups，不需要知道具体有哪些项目
+

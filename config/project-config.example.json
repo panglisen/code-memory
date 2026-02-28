@@ -3,6 +3,9 @@
     "my-backend-parent": "backend-api",
     "my-frontend-app": "frontend"
   },
+  "project_groups": {
+    "shared-java": ["backend-api"]
+  },
   "ignored_projects": ["mac", "git-repo"],
   "domain_hints": {
     "app_user": {
