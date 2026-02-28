@@ -18,7 +18,8 @@
 │                                                          │
 │  ┌─ 自动写入 (Hooks) ──────────────────────────────┐    │
 │  │  PreToolUse → 规范注入  |  PostToolUse → 每日笔记│    │
-│  │  SubagentStart → Schema注入 | SessionEnd → 摘要  │    │
+│  │  PostToolUse → 避坑规则 |  SubagentStart → Schema│    │
+│  │  PreCompact → flag清除  |  SessionEnd → 摘要     │    │
 │  └──────────────────────────────────────────────────┘    │
 │                                                          │
 │  ┌─ 自进化反馈 ────────────────────────────────────┐    │
@@ -102,7 +103,7 @@ cd code-memory
 # 脚本
 mkdir -p ~/.claude/scripts/lib
 cp scripts/*.py scripts/*.sh ~/.claude/scripts/
-cp scripts/lib/*.jq ~/.claude/scripts/lib/
+cp scripts/lib/*.jq scripts/lib/*.py ~/.claude/scripts/lib/
 chmod +x ~/.claude/scripts/*.sh ~/.claude/scripts/*.py
 
 # 斜杠命令
@@ -347,6 +348,10 @@ weekly-consolidate.sh
       {
         "matcher": "Edit|Write",
         "hooks": [{"type": "command", "command": "~/.claude/scripts/extract-memory.sh"}]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{"type": "command", "command": "~/.claude/scripts/avoidance-gate.sh"}]
       }
     ],
     "SubagentStart": [
