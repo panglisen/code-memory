@@ -62,13 +62,21 @@ if [ "$1" = "--uninstall" ]; then
              weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
              migrate-sessions.sh memory-feedback.py signal-analyzer.py \
              capability-generator.py cleanup-avoidances.sh \
-             rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh; do
+             rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh \
+             avoidance-gate.sh semantic-lint.sh; do
         if [ -f "$SCRIPTS_DIR/$f" ]; then
             rm "$SCRIPTS_DIR/$f"
             ok "删除 scripts/$f"
         fi
     done
-    [ -f "$SCRIPTS_DIR/lib/extract-conversation.jq" ] && rm "$SCRIPTS_DIR/lib/extract-conversation.jq" && ok "删除 scripts/lib/extract-conversation.jq"
+    # lib 文件
+    for f in extract-conversation.jq lint-antd-v3-rules.py lint-java-sql-rules.py \
+             lint-shell-rules.py lint-python-rules.py; do
+        if [ -f "$SCRIPTS_DIR/lib/$f" ]; then
+            rm "$SCRIPTS_DIR/lib/$f"
+            ok "删除 scripts/lib/$f"
+        fi
+    done
 
     # 斜杠命令
     for f in memory-add.md memory-learn.md memory-avoid.md memory-summarize.md \
@@ -179,10 +187,15 @@ for f in memory-search.py session-summary.sh extract-memory.sh \
          weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
          migrate-sessions.sh memory-feedback.py signal-analyzer.py \
          capability-generator.py cleanup-avoidances.sh \
-         rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh; do
+         rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh \
+         avoidance-gate.sh semantic-lint.sh; do
     copy_file "$SCRIPT_DIR/scripts/$f" "$SCRIPTS_DIR/$f"
 done
-copy_file "$SCRIPT_DIR/scripts/lib/extract-conversation.jq" "$SCRIPTS_DIR/lib/extract-conversation.jq"
+# lib 文件
+for f in extract-conversation.jq lint-antd-v3-rules.py lint-java-sql-rules.py \
+         lint-shell-rules.py lint-python-rules.py; do
+    copy_file "$SCRIPT_DIR/scripts/lib/$f" "$SCRIPTS_DIR/lib/$f"
+done
 
 # 设置可执行权限
 chmod +x "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR"/*.py
@@ -285,7 +298,8 @@ ERRORS=0
 # 检查关键文件
 for f in scripts/memory-search.py scripts/session-summary.sh scripts/extract-memory.sh \
          scripts/memory-feedback.py scripts/signal-analyzer.py scripts/capability-generator.py \
-         scripts/rules-injector.sh scripts/rules-gate.sh scripts/schema-injector.sh; do
+         scripts/rules-injector.sh scripts/rules-gate.sh scripts/schema-injector.sh \
+         scripts/avoidance-gate.sh; do
     if [ -f "$CLAUDE_DIR/$f" ]; then
         ok "$f"
     else

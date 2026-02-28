@@ -51,6 +51,7 @@
 - **规范无损注入** — PreToolUse Hook 通过 `additionalContext` 零浪费注入项目规范，Read 不被阻断
 - **Subagent Schema 注入** — SubagentStart Hook 向 Plan/Explore 等设计 agent 自动注入数据库 schema 索引
 - **自进化系统** — 经验有效性追踪 (Laplace 平滑 + 指数衰减)、跨会话信号分析 (循环问题检测)、能力自动生成 (从循环模式自动生成 Skill/Command)
+- **避坑规则自动拦截** — PostToolUse Hook 编辑后自动检测代码反模式 (antd v3、Java SQL、Shell/Python 兼容性)，Tier 2 可选 LLM 语义检测
 - **斜杠命令** — `/memory-add`, `/memory-learn`, `/memory-avoid`, `/memory-summarize`, `/memory-health`, `/memory-signals`, `/memory-generate`
 - **DB Schema 提取** — ast-grep + sqlglot 从 Java 代码提取 JOIN/DAO，MySQL 表结构按前缀分组
 - **零外部服务** — 纯文件系统 + SQLite，不依赖任何云服务或数据库
@@ -140,6 +141,8 @@ code-memory/
 │   ├── memory-search.py               # RRF 混合搜索 (BM25 + 向量)
 │   ├── session-summary.sh             # SessionEnd Hook: 会话摘要 + 知识提取
 │   ├── extract-memory.sh              # PostToolUse Hook: 编辑记录
+│   ├── avoidance-gate.sh              # PostToolUse Hook: 避坑规则自动检测入口
+│   ├── semantic-lint.sh               # Tier 2 语义检测 (LLM, 默认关闭)
 │   ├── rules-injector.sh              # PreToolUse Hook (Read): 项目规范无损注入
 │   ├── rules-gate.sh                  # PreToolUse Hook (Edit|Write): 规范加载安全网
 │   ├── schema-injector.sh             # SubagentStart Hook: Schema 索引注入
@@ -153,7 +156,11 @@ code-memory/
 │   ├── capability-generator.py        # 能力自动生成 (Skill/Command)
 │   ├── cleanup-avoidances.sh          # 避坑经验去重整理
 │   └── lib/
-│       └── extract-conversation.jq    # JSONL 对话提取
+│       ├── extract-conversation.jq    # JSONL 对话提取
+│       ├── lint-antd-v3-rules.py      # 规则引擎: 前端 antd v3 反模式
+│       ├── lint-java-sql-rules.py     # 规则引擎: Java DAO SQL 反模式
+│       ├── lint-shell-rules.py        # 规则引擎: Shell bash 3.2 兼容
+│       └── lint-python-rules.py       # 规则引擎: Python 3.9 兼容
 ├── commands/
 │   ├── memory-add.md                  # /memory-add 添加原子事实
 │   ├── memory-learn.md                # /memory-learn 学习代码模式
@@ -217,13 +224,30 @@ Claude Code 触发上下文压缩
     → 压缩后下次 Read 项目文件时自动重新注入规范
 ```
 
-**1. 文件编辑后 (PostToolUse Hook)**
+**1. 文件编辑后 — 每日笔记 (PostToolUse Hook)**
 
 ```
 Claude Code 编辑文件
     → extract-memory.sh
     → 记录到 daily/YYYY-MM-DD.md
     → 同一分钟内去重合并
+```
+
+**1.5 文件编辑后 — 避坑规则检测 (PostToolUse Hook)**
+
+```
+Claude Code 编辑文件
+    → avoidance-gate.sh (统一分发入口)
+    → 根据文件路径路由到对应规则引擎:
+       ├─ *.js/*.jsx (前端项目) → lint-antd-v3-rules.py (antd v3 反模式)
+       ├─ *Dao.java/*Mapper.java → lint-java-sql-rules.py (SQL 反模式)
+       ├─ *.sh                   → lint-shell-rules.py (bash 3.2 兼容)
+       └─ *.py                   → lint-python-rules.py (Python 3.9 兼容)
+    → 规则引擎输出:
+       ├─ block + reason → Claude 必须修复后重试
+       ├─ approve + warnings → stderr 提示，编辑正常通过
+       └─ 无输出 → 通过
+    → (可选) CLAUDE_SEMANTIC_LINT=true 时启用 Tier 2 LLM 语义检测
 ```
 
 **2. 会话结束时 (Stop Hook) — 摘要 + 自动知识提取**
@@ -355,6 +379,7 @@ weekly-consolidate.sh
 | `CLAUDE_SUMMARIZE_MIN_CHARS` | `500` | 最小对话字符数，低于此值跳过知识提取 (仍生成摘要) |
 | `CAPABILITY_MODEL` | `haiku` | 能力自动生成使用的 LLM 模型 |
 | `CAPABILITY_GENERATION` | `true` | 能力自动生成开关，设为 `false` 禁用 |
+| `CLAUDE_SEMANTIC_LINT` | (未设置) | 设为 `true` 启用 Tier 2 LLM 语义检测 (避坑规则) |
 
 ### 项目映射配置
 
@@ -368,6 +393,7 @@ weekly-consolidate.sh
   "project_groups": {
     "shared-java": ["backend-api", "worker-service"]
   },
+  "frontend_projects": ["frontend"],
   "ignored_projects": ["mac", "git-repo"],
   "domain_hints": {
     "app_user": {"label": "用户", "keywords": ["用户表", "会员"]}
@@ -379,6 +405,7 @@ weekly-consolidate.sh
 
 - `project_name_map` — 代码仓库目录名到记忆系统项目名的映射
 - `project_groups` — 项目组定义，组内项目共享规范（如多个 Java 项目共享 `shared-java/rules.md`）
+- `frontend_projects` — 前端项目列表（用于路由 antd 避坑规则）
 - `ignored_projects` — 忽略的目录名（非代码项目）
 - `domain_hints` — Schema 提取时的业务域中文关键词映射
 - `special_prefixes` — 表名中包含下划线但应视为整体的前缀
@@ -454,6 +481,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [x] **自动记忆衰减** — 基于访问频率和时间自动调整事实优先级 (Laplace + 指数衰减)
 - [x] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
 - [x] **会话知识自动提取** — Stop Hook 自动提取规范和避坑经验，分发写入 rules.md 和 MEMORY.md
+- [x] **避坑规则自动拦截** — PostToolUse Hook 编辑后自动检测代码反模式，Tier 2 可选 LLM 语义检测
 - [x] **规范无损注入** — PreToolUse `additionalContext` 零浪费注入项目规范 + SubagentStart Schema 索引注入
 
 > 欢迎通过 [Issues](https://github.com/panglisen/code-memory/issues) 提出建议或参与讨论

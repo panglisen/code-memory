@@ -288,6 +288,19 @@ PostToolUse (Edit|Write)
     → 更新每日笔记
     → 去重: 同分钟同项目合并
 
+PostToolUse (Edit|Write)
+    → avoidance-gate.sh (避坑规则自动检测)
+    → 根据文件路径路由到规则引擎:
+       ├─ *.js/*.jsx + 前端项目 → lint-antd-v3-rules.py
+       ├─ *Dao.java/*Mapper.java → lint-java-sql-rules.py
+       ├─ *.sh                   → lint-shell-rules.py
+       └─ *.py                   → lint-python-rules.py
+    → 规则引擎返回:
+       ├─ block: Claude 必须修复后重试
+       ├─ approve + warnings: stderr 提示 (不阻断)
+       └─ 无输出: 通过
+    → Tier 2 (CLAUDE_SEMANTIC_LINT=true): LLM 语义检测
+
 SessionEnd
     → session-summary.sh
     → 从 JSONL 提取对话 (jq)
@@ -477,4 +490,17 @@ CREATE TABLE experience_effectiveness (experience_id TEXT PRIMARY KEY, total_ref
 - 不同用户有不同的项目组合（可能是 3 个 Java 项目共享，也可能是 Go + Python 混合）
 - `config.json` 的 `project_groups` 让用户自由定义哪些项目共享同一套规范
 - 脚本只需遍历 groups，不需要知道具体有哪些项目
+
+### 为什么避坑规则检测放在 PostToolUse 而非 PreToolUse?
+
+- **PostToolUse** 在编辑完成后运行，此时文件内容已经写入磁盘，规则引擎可以读到完整的新代码
+- **PreToolUse** 只能看到 tool_input (old_string/new_string)，无法获取编辑后的完整文件上下文
+- PostToolUse 的 `block` 仍然可以阻止 Claude 继续，Claude 会看到 block 原因并自动修复
+
+### 为什么用两层规则引擎 (Tier 1 + Tier 2)?
+
+- **Tier 1 (正则/AST)**: 零 LLM 调用、零延迟、零成本，适合可精确模式匹配的规则（如 `declare -A`、`match/case`、SQL 反模式）
+- **Tier 2 (LLM 语义)**: 处理无法用正则表达的语义规则（如"是否硬编码了业务常量"），但有延迟和成本
+- Tier 2 默认关闭 (`CLAUDE_SEMANTIC_LINT=true` 启用)，不需要时零开销
+- 两层分离让 Tier 1 始终高效运行，Tier 2 按需启用
 

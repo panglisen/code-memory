@@ -6,6 +6,7 @@
   "project_groups": {
     "shared-java": ["backend-api"]
   },
+  "frontend_projects": ["frontend"],
   "ignored_projects": ["mac", "git-repo"],
   "domain_hints": {
     "app_user": {

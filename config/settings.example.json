@@ -29,6 +29,15 @@
             "command": "~/.claude/scripts/extract-memory.sh"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/avoidance-gate.sh"
+          }
+        ]
       }
     ],
     "SubagentStart": [
