@@ -61,7 +61,7 @@ if [ "$1" = "--uninstall" ]; then
     for f in memory-search.py session-summary.sh extract-memory.sh \
              weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
              migrate-sessions.sh memory-feedback.py signal-analyzer.py \
-             capability-generator.py cleanup-avoidances.sh \
+             capability-generator.py rule-distiller.py cleanup-avoidances.sh \
              rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh \
              avoidance-gate.sh semantic-lint.sh; do
         if [ -f "$SCRIPTS_DIR/$f" ]; then
@@ -71,7 +71,7 @@ if [ "$1" = "--uninstall" ]; then
     done
     # lib 文件
     for f in extract-conversation.jq lint-antd-v3-rules.py lint-java-sql-rules.py \
-             lint-shell-rules.py lint-python-rules.py; do
+             lint-shell-rules.py lint-python-rules.py lint-auto-rules.py; do
         if [ -f "$SCRIPTS_DIR/lib/$f" ]; then
             rm "$SCRIPTS_DIR/lib/$f"
             ok "删除 scripts/lib/$f"
@@ -186,14 +186,14 @@ info "安装脚本 → ~/.claude/scripts/"
 for f in memory-search.py session-summary.sh extract-memory.sh \
          weekly-consolidate.sh auto-extract-facts.py extract-schema.py \
          migrate-sessions.sh memory-feedback.py signal-analyzer.py \
-         capability-generator.py cleanup-avoidances.sh \
+         capability-generator.py rule-distiller.py cleanup-avoidances.sh \
          rules-injector.sh rules-gate.sh schema-injector.sh pre-compact.sh \
          avoidance-gate.sh semantic-lint.sh; do
     copy_file "$SCRIPT_DIR/scripts/$f" "$SCRIPTS_DIR/$f"
 done
 # lib 文件
 for f in extract-conversation.jq lint-antd-v3-rules.py lint-java-sql-rules.py \
-         lint-shell-rules.py lint-python-rules.py; do
+         lint-shell-rules.py lint-python-rules.py lint-auto-rules.py; do
     copy_file "$SCRIPT_DIR/scripts/lib/$f" "$SCRIPTS_DIR/lib/$f"
 done
 
@@ -222,6 +222,15 @@ info "初始化模板文件 (已有文件不覆盖)..."
 
 copy_if_not_exists "$SCRIPT_DIR/templates/MEMORY.md" "$MEMORY_DIR/MEMORY.md"
 copy_if_not_exists "$SCRIPT_DIR/config/project-config.example.json" "$MEMORY_DIR/config.json"
+
+# 初始化 auto-rules.json (自动规则蒸馏数据文件)
+AUTO_RULES_FILE="$MEMORY_DIR/evolution/auto-rules.json"
+if [ ! -f "$AUTO_RULES_FILE" ]; then
+    printf '{\n  "version": 1,\n  "generated_at": "",\n  "rules": []\n}\n' > "$AUTO_RULES_FILE"
+    ok "auto-rules.json (初始化空规则)"
+else
+    warn "auto-rules.json 已存在，跳过 (不覆盖)"
+fi
 echo ""
 
 # --- 6. 合并 Hooks 到 settings.json ---
@@ -298,6 +307,7 @@ ERRORS=0
 # 检查关键文件
 for f in scripts/memory-search.py scripts/session-summary.sh scripts/extract-memory.sh \
          scripts/memory-feedback.py scripts/signal-analyzer.py scripts/capability-generator.py \
+         scripts/rule-distiller.py scripts/lib/lint-auto-rules.py \
          scripts/rules-injector.sh scripts/rules-gate.sh scripts/schema-injector.sh \
          scripts/avoidance-gate.sh; do
     if [ -f "$CLAUDE_DIR/$f" ]; then
