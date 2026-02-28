@@ -2,7 +2,7 @@
 # session-summary.sh - 会话结束时提取摘要 + 自动知识提取
 # 由 Stop 或 SessionEnd Hook 触发
 # 策略: 从 JSONL transcript 提取对话文本 -> LLM 生成 JSON (摘要+知识) -> 分发写入
-# 改进: 借鉴 OpenClaw 的知识提炼思路，将死存储转化为可检索知识
+# 改进: 借鉴 OpenClaw 的知识提炼思路，将 41MB 死存储转化为可检索知识
 
 MEMORY_DIR="$HOME/.claude/memory"
 DAILY_DIR="$MEMORY_DIR/daily"
@@ -31,22 +31,19 @@ normalize_project_name() {
     local raw="$1"
     # 去除首尾空格
     raw=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    # 拒绝逗号分隔的组合名 (如 "project-a, project-b")
+    # 拒绝逗号分隔的组合名 (如 "scrm-platform, scrm-front")
     case "$raw" in
         *,*) echo ""; return ;;
     esac
-
-    # 从 config.json 读取项目名映射 (如果存在)
-    local config_file="$MEMORY_DIR/config.json"
-    if [ -f "$config_file" ] && command -v jq &>/dev/null; then
-        local mapped
-        mapped=$(jq -r --arg name "$raw" '.project_name_map[$name] // empty' "$config_file" 2>/dev/null)
-        if [ -n "$mapped" ]; then
-            echo "$mapped"
-            return
-        fi
-    fi
-
+    # 已知别名映射 (硬编码)
+    case "$raw" in
+        micor-mantis-scrm-platform-parent)
+            echo "scrm-platform"; return ;;
+        mantis-scrm-front)
+            echo "scrm-front"; return ;;
+        mantis-ewechat-work-parent)
+            echo "ewechat-work"; return ;;
+    esac
     # 自动检测工作区: cwd/projects/ 下有多个子目录 → 当前目录是工作区不是项目
     local cwd="${HOOK_CWD:-$PWD}"
     local dir_name
@@ -172,7 +169,7 @@ generate_summary() {
     # 构建已有避坑主题列表，注入到 prompt 中抑制重复提取 (扫描所有去重源文件)
     local existing_topics=""
     if [ ${#AVOIDANCE_DEDUP_SOURCES[@]} -gt 0 ]; then
-        existing_topics=$(python3 -c "
+        existing_topics=$(/usr/bin/python3 -c "
 import re, sys, glob
 topics = []
 for path in sys.argv[1:]:
@@ -250,7 +247,14 @@ knowledge 提取规则:
 - avoidances 硬上限: 最多输出 5 条，超过时只保留最有价值的 5 条
 - 不要编造不存在的知识，只提取会话中明确出现的内容
 - 使用中文
-- 项目: '"$project"''"$existing_topics_block"
+- 项目: '"$project"'
+
+以下主题已有 PostToolUse Hook 自动检测（lint-antd-v3），不需要再提取为避坑经验:
+- Modal.confirm/info/warning/error/success 缺少 prefixCls (自动 block)
+- antd v4 errorFields 用于 v3 项目 (自动 block)
+- setTimeout + setFieldsValue 等待渲染 (自动 warn)
+- useState(props.xxx) 异步 props 初始化 (自动 warn)
+- normalizeCondType 函数泄漏/未全链路应用 (自动 warn)'"$existing_topics_block"
     else
         system_prompt='你是一个会话摘要提取器。从以下开发会话对话中提取关键知识点。
 
@@ -376,7 +380,7 @@ write_rules() {
     # 规范化项目名 (防止创建错误目录)
     target_project=$(normalize_project_name "$target_project")
     if [ -z "$target_project" ]; then
-        echo "[Knowledge] 项目名为工作区或组合名，跳过 rules 写入" >&2
+        echo "[Knowledge] 项目名 '$knowledge_project' / '$project' 为工作区或组合名，跳过 rules 写入" >&2
         return 0
     fi
 
@@ -518,7 +522,7 @@ write_avoidances() {
 
         # 去重: trigram 多策略 (Jaccard + 包含度 + 子串检测), 扫描所有去重源文件
         local is_duplicate
-        is_duplicate=$(printf '%s' "$avoidance" | python3 -c "
+        is_duplicate=$(printf '%s' "$avoidance" | /usr/bin/python3 -c "
 import sys, re
 def trigrams(s):
     s = re.sub(r'\s+', '', s)
@@ -595,6 +599,13 @@ print('unique')
 
     if [ "$written_count" -gt 0 ]; then
         echo "[Knowledge] 本会话共写入 ${written_count} 条避坑经验 (上限 ${MAX_AVOIDANCES_PER_SESSION})" >&2
+
+        # 后台触发规则蒸馏: 将新避坑经验转化为 auto-rules.json 检测规则 (非阻塞)
+        RULE_DISTILLER="$HOME/.claude/scripts/rule-distiller.py"
+        if [ -f "$RULE_DISTILLER" ]; then
+            nohup /usr/bin/python3 "$RULE_DISTILLER" \
+                >> /tmp/claude-rule-distiller.log 2>&1 &
+        fi
     fi
 }
 
@@ -701,20 +712,20 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
                         write_daily_entry "$CLEANED_JSON" "$SESSION_ID"
                     fi
 
-                    # 5. 后台记录会话结果 (非阻塞, 反馈闭环)
+                    # 5. 后台记录会话结果 (非阻塞, Phase 1: 反馈闭环)
                     if [ -n "$SESSION_ID" ] && [ -f "$HOME/.claude/scripts/memory-feedback.py" ]; then
                         local has_errors_flag="0"
                         printf '%s' "$CLEANED_JSON" | jq -e '.knowledge.avoidances | length > 0' >/dev/null 2>&1 && has_errors_flag="1"
                         local corrections_count
                         corrections_count=$(printf '%s' "$CLEANED_JSON" | jq -r '.knowledge.rules // [] | length' 2>/dev/null)
-                        python3 "$HOME/.claude/scripts/memory-feedback.py" outcome \
+                        /usr/bin/python3 "$HOME/.claude/scripts/memory-feedback.py" outcome \
                             --session-id "$SESSION_ID" --project "$PROJECT" \
                             --has-errors "$has_errors_flag" --user-corrections "${corrections_count:-0}" 2>/dev/null &
                     fi
 
-                    # 6. 后台提取信号 (非阻塞, 信号分析)
+                    # 6. 后台提取信号 (非阻塞, Phase 2: 信号分析)
                     if [ -n "$SESSION_ID" ] && [ -f "$HOME/.claude/scripts/signal-analyzer.py" ]; then
-                        python3 "$HOME/.claude/scripts/signal-analyzer.py" extract \
+                        /usr/bin/python3 "$HOME/.claude/scripts/signal-analyzer.py" extract \
                             --session-id "$SESSION_ID" --summary-file "$SESSION_FILE" 2>/dev/null &
                     fi
                 else

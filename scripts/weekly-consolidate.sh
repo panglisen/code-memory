@@ -176,7 +176,7 @@ echo "## 7. 刷新搜索索引"
 echo ""
 
 if [ -f "$HOME/.claude/scripts/memory-search.py" ]; then
-    python3 "$HOME/.claude/scripts/memory-search.py" --rebuild 2>&1
+    /usr/bin/python3 "$HOME/.claude/scripts/memory-search.py" --rebuild 2>&1
     echo ""
 else
     echo "搜索索引刷新跳过 (python3 或 memory-search.py 不可用)"
@@ -312,8 +312,8 @@ echo "## 10b. 跨会话信号分析"
 echo ""
 
 if [ -f "$HOME/.claude/scripts/signal-analyzer.py" ]; then
-    python3 "$HOME/.claude/scripts/signal-analyzer.py" analyze --days 7 2>&1
-    python3 "$HOME/.claude/scripts/signal-analyzer.py" auto-escalate 2>&1
+    /usr/bin/python3 "$HOME/.claude/scripts/signal-analyzer.py" analyze --days 7 2>&1
+    /usr/bin/python3 "$HOME/.claude/scripts/signal-analyzer.py" auto-escalate 2>&1
 else
     echo "信号分析跳过 (signal-analyzer.py 不可用)"
 fi
@@ -324,12 +324,29 @@ echo ""
 
 if [ -f "$HOME/.claude/scripts/capability-generator.py" ]; then
     if [ "$1" = "--dry-run" ]; then
-        python3 "$HOME/.claude/scripts/capability-generator.py" --dry-run 2>&1
+        /usr/bin/python3 "$HOME/.claude/scripts/capability-generator.py" --dry-run 2>&1
     else
-        python3 "$HOME/.claude/scripts/capability-generator.py" 2>&1
+        /usr/bin/python3 "$HOME/.claude/scripts/capability-generator.py" 2>&1
     fi
 else
     echo "能力生成跳过 (capability-generator.py 不可用)"
+fi
+echo ""
+
+echo "## 10d. 规则蒸馏"
+echo ""
+
+SCRIPTS_DIR="$HOME/.claude/scripts"
+if [ -f "$SCRIPTS_DIR/rule-distiller.py" ]; then
+    if [ "$1" = "--dry-run" ]; then
+        /usr/bin/python3 "$SCRIPTS_DIR/rule-distiller.py" --dry-run 2>&1
+    else
+        /usr/bin/python3 "$SCRIPTS_DIR/rule-distiller.py" 2>&1
+    fi
+    # 列出当前规则
+    /usr/bin/python3 "$SCRIPTS_DIR/rule-distiller.py" --list 2>&1
+else
+    echo "规则蒸馏跳过 (rule-distiller.py 不可用)"
 fi
 echo ""
 

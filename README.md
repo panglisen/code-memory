@@ -24,6 +24,7 @@
 │                                                          │
 │  ┌─ 自进化反馈 ────────────────────────────────────┐    │
 │  │  经验引用追踪 → 信号分析 → 能力自动生成         │    │
+│  │  避坑经验 → 规则蒸馏 → auto-rules 自动检测      │    │
 │  └──────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────┘
 
@@ -42,6 +43,7 @@
                     反馈追踪
                     信号分析
                     能力生成
+                    规则蒸馏
 ```
 
 ## 核心特性
@@ -53,6 +55,7 @@
 - **Subagent Schema 注入** — SubagentStart Hook 向 Plan/Explore 等设计 agent 自动注入数据库 schema 索引
 - **自进化系统** — 经验有效性追踪 (Laplace 平滑 + 指数衰减)、跨会话信号分析 (循环问题检测)、能力自动生成 (从循环模式自动生成 Skill/Command)
 - **避坑规则自动拦截** — PostToolUse Hook 编辑后自动检测代码反模式 (antd v3、Java SQL、Shell/Python 兼容性)，Tier 2 可选 LLM 语义检测
+- **避坑经验规则蒸馏** — 新避坑经验写入后，LLM 自动判断可否正则化，生成 JSON 规则配置，avoidance-gate 自动加载检测
 - **斜杠命令** — `/memory-add`, `/memory-learn`, `/memory-avoid`, `/memory-summarize`, `/memory-health`, `/memory-signals`, `/memory-generate`
 - **DB Schema 提取** — ast-grep + sqlglot 从 Java 代码提取 JOIN/DAO，MySQL 表结构按前缀分组
 - **零外部服务** — 纯文件系统 + SQLite，不依赖任何云服务或数据库
@@ -148,20 +151,22 @@ code-memory/
 │   ├── rules-gate.sh                  # PreToolUse Hook (Edit|Write): 规范加载安全网
 │   ├── schema-injector.sh             # SubagentStart Hook: Schema 索引注入
 │   ├── pre-compact.sh                 # PreCompact Hook: 压缩前清除 flag 确保重新注入
-│   ├── weekly-consolidate.sh          # 周期整理 + 信号分析 + 能力生成
+│   ├── weekly-consolidate.sh          # 周期整理 + 信号分析 + 能力生成 + 规则蒸馏
 │   ├── auto-extract-facts.py          # 自动事实提取 (LLM 驱动)
 │   ├── extract-schema.py              # DB Schema 提取 (ast-grep + sqlglot)
 │   ├── migrate-sessions.sh            # 历史会话迁移工具
 │   ├── memory-feedback.py             # 经验有效性追踪 (Laplace + 指数衰减)
 │   ├── signal-analyzer.py             # 跨会话信号分析 (循环问题检测)
 │   ├── capability-generator.py        # 能力自动生成 (Skill/Command)
+│   ├── rule-distiller.py              # 避坑经验规则蒸馏 (LLM → JSON 规则配置)
 │   ├── cleanup-avoidances.sh          # 避坑经验去重整理
 │   └── lib/
 │       ├── extract-conversation.jq    # JSONL 对话提取
 │       ├── lint-antd-v3-rules.py      # 规则引擎: 前端 antd v3 反模式
 │       ├── lint-java-sql-rules.py     # 规则引擎: Java DAO SQL 反模式
 │       ├── lint-shell-rules.py        # 规则引擎: Shell bash 3.2 兼容
-│       └── lint-python-rules.py       # 规则引擎: Python 3.9 兼容
+│       ├── lint-python-rules.py       # 规则引擎: Python 3.9 兼容
+│       └── lint-auto-rules.py        # 规则引擎: 自动生成规则 (读取 auto-rules.json)
 ├── commands/
 │   ├── memory-add.md                  # /memory-add 添加原子事实
 │   ├── memory-learn.md                # /memory-learn 学习代码模式
@@ -239,14 +244,16 @@ Claude Code 编辑文件
 ```
 Claude Code 编辑文件
     → avoidance-gate.sh (统一分发入口)
-    → 根据文件路径路由到对应规则引擎:
+    → Tier 1a: 特定规则引擎 (按文件类型路由):
        ├─ *.js/*.jsx (前端项目) → lint-antd-v3-rules.py (antd v3 反模式)
        ├─ *Dao.java/*Mapper.java → lint-java-sql-rules.py (SQL 反模式)
        ├─ *.sh                   → lint-shell-rules.py (bash 3.2 兼容)
        └─ *.py                   → lint-python-rules.py (Python 3.9 兼容)
-    → 规则引擎输出:
-       ├─ block + reason → Claude 必须修复后重试
-       ├─ approve + warnings → stderr 提示，编辑正常通过
+    → Tier 1b: auto-rules 引擎 (始终运行, 所有文件类型):
+       └─ lint-auto-rules.py → 读取 auto-rules.json → 正则检测
+    → 合并结果:
+       ├─ 任一引擎 block → Claude 必须修复后重试
+       ├─ warnings 合并 → stderr 提示，编辑正常通过
        └─ 无输出 → 通过
     → (可选) CLAUDE_SEMANTIC_LINT=true 时启用 Tier 2 LLM 语义检测
 ```
@@ -265,7 +272,8 @@ Claude Code 会话结束
        └─ daily/YYYY-MM-DD.md ← 增强版每日笔记
     → 后台非阻塞:
        ├─ memory-feedback.py  ← 记录会话结果 (success/failed)
-       └─ signal-analyzer.py  ← 提取会话信号
+       ├─ signal-analyzer.py  ← 提取会话信号
+       └─ rule-distiller.py   ← 避坑经验规则蒸馏 (有新经验时触发)
 ```
 
 知识提取条件:
@@ -284,6 +292,7 @@ weekly-consolidate.sh
     → 自动事实提取 (auto-extract-facts.py)
     → 跨会话信号分析 (signal-analyzer.py)
     → 能力自动生成 (capability-generator.py)
+    → 规则蒸馏 (rule-distiller.py)
     → 清理过期文件
 ```
 
@@ -301,10 +310,18 @@ weekly-consolidate.sh
     → 频率统计 + 循环模式检测
     → count >= 3 自动升级为 HIGH 优先级
 
+避坑经验写入
+    → rule-distiller.py (后台触发)
+    → LLM (Haiku) 判断是否可正则化
+    → 验证 regex (re.compile)
+    → 写入 auto-rules.json (severity 一律 warn)
+    → 下次编辑时 avoidance-gate.sh 自动加载检测
+
 周期性检查
     → capability-generator.py (门控条件全部满足时)
     → 从循环模式自动生成 Skill/Command
     → 更新 auto-capabilities.md 索引
+    → rule-distiller.py 批量蒸馏新规则
 ```
 
 ### 搜索架构
@@ -483,6 +500,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [ ] **超级工厂** — agent集群模式下的多角色全自动开发
 - [ ] **提取sql扩展** — 扩展从mybatis的xml中提取sql
 - [x] **自进化系统** — 经验反馈闭环 + 跨会话信号分析 + 能力自动生成
+- [x] **避坑经验规则蒸馏** — 新避坑经验自动转化为正则检测规则 (LLM 判断 + JSON 配置 + avoidance-gate 自动加载)
 - [x] **自动记忆衰减** — 基于访问频率和时间自动调整事实优先级 (Laplace + 指数衰减)
 - [x] **install.sh 一键安装** — 自动检测环境、复制文件、配置 hooks
 - [x] **会话知识自动提取** — Stop Hook 自动提取规范和避坑经验，分发写入 rules.md 和 MEMORY.md

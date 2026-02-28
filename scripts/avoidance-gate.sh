@@ -3,23 +3,16 @@
 # 统一避坑规则检测入口：根据文件路径分发到对应规则引擎
 #
 # 规则引擎 (Tier 1 - 始终开启):
-#   lib/lint-antd-v3-rules.py   — 前端 React/antd 反模式
-#   lib/lint-java-sql-rules.py  — Java DAO: SQL 反模式
-#   lib/lint-shell-rules.py     — Shell: bash 3.2 兼容
-#   lib/lint-python-rules.py    — Python: 3.9 兼容
+#   lib/lint-antd-v3-rules.py   — scrm-front: antd v3 反模式 (5 条)
+#   lib/lint-java-sql-rules.py  — Java DAO: SQL 反模式 (4 条)
+#   lib/lint-shell-rules.py     — Shell: bash 3.2 兼容 (2 条)
+#   lib/lint-python-rules.py    — Python: 3.9 兼容 (2 条)
+#   lib/lint-auto-rules.py      — 自动生成规则 (始终运行, 所有文件类型)
 #
 # 语义检测 (Tier 2 - 默认关闭):
-#   CLAUDE_SEMANTIC_LINT=true 时启用 LLM 语义检查
-#
-# 项目检测:
-#   1. config.json 的 project_name_map 匹配目录名 → 项目名
-#   2. 直接匹配 areas/projects/{name}/ 下有 rules.md 的项目名
-#   前端项目名含 "front" → antd 规则; Java 项目 *Dao.java → SQL 规则
-#   .sh/.py 文件 → 通用兼容规则
+#   semantic-lint.sh — CLAUDE_SEMANTIC_LINT=true 时启用 LLM 语义检查
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECTS_DIR="$HOME/.claude/memory/areas/projects"
-CONFIG_FILE="$HOME/.claude/memory/config.json"
 PYTHON="/usr/bin/python3"
 
 # 读 stdin (Hook 输入 JSON)
@@ -41,66 +34,13 @@ fi
 # Python 不可用 → 放行
 [ ! -x "$PYTHON" ] && exit 0
 
-# 检测项目名 (用于确定前端/后端项目类型)
-detect_project() {
-    local file_path="$1"
-
-    # 方式 1: config.json project_name_map
-    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        local mappings
-        mappings=$(jq -r '.project_name_map // {} | to_entries[] | "\(.key)\t\(.value)"' "$CONFIG_FILE" 2>/dev/null)
-        while IFS=$'\t' read -r dir_name project_name; do
-            [ -z "$dir_name" ] && continue
-            if [[ "$file_path" == *"/$dir_name/"* ]]; then
-                echo "$project_name"
-                return
-            fi
-        done <<< "$mappings"
-    fi
-
-    # 方式 2: 直接匹配 areas/projects/ 下的项目名
-    for rules_file in "$PROJECTS_DIR"/*/rules.md; do
-        [ -f "$rules_file" ] || continue
-        local project_name
-        project_name=$(basename "$(dirname "$rules_file")")
-        [[ "$project_name" == shared-* ]] && continue
-        if [[ "$file_path" == *"/$project_name/"* ]]; then
-            echo "$project_name"
-            return
-        fi
-    done
-
-    echo ""
-}
-
-# 检查项目是否为前端项目 (用于 antd 规则)
-is_frontend_project() {
-    local project="$1"
-    # 项目名含 "front" 或 config.json 中标记为前端
-    if [[ "$project" == *front* ]]; then
-        return 0
-    fi
-    # 检查 config.json 中的 frontend_projects 列表
-    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        local is_fe
-        is_fe=$(jq -r --arg p "$project" '.frontend_projects // [] | index($p) // empty' "$CONFIG_FILE" 2>/dev/null)
-        [ -n "$is_fe" ] && return 0
-    fi
-    return 1
-}
-
-# 路由: 根据文件类型和项目选择规则引擎
+# --- Tier 1a: 特定规则引擎 (按文件类型路由) ---
 RULE_ENGINE=""
 
 case "$FILE_PATH" in
-    # JavaScript/JSX: 前端 antd 规则 (需要匹配前端项目)
-    *.js|*.jsx)
-        PROJECT=$(detect_project "$FILE_PATH")
-        if [ -n "$PROJECT" ] && is_frontend_project "$PROJECT"; then
-            if [[ "$FILE_PATH" == */src/* ]]; then
-                RULE_ENGINE="$SCRIPT_DIR/lib/lint-antd-v3-rules.py"
-            fi
-        fi
+    # scrm-front: antd v3 规则
+    */mantis-scrm-front/src/*.js|*/mantis-scrm-front/src/*.jsx)
+        RULE_ENGINE="$SCRIPT_DIR/lib/lint-antd-v3-rules.py"
         ;;
     # Java DAO/Mapper: SQL 规则
     *Dao.java|*Mapper.java|*DAO.java)
@@ -114,45 +54,93 @@ case "$FILE_PATH" in
     *.py)
         RULE_ENGINE="$SCRIPT_DIR/lib/lint-python-rules.py"
         ;;
-    *)
-        exit 0
-        ;;
 esac
 
-# 无匹配规则引擎 → 放行
-[ -z "$RULE_ENGINE" ] && exit 0
-
-# 规则引擎文件不存在 → 放行
-if [ ! -f "$RULE_ENGINE" ]; then
-    echo "[avoidance-gate] 规则引擎不存在: $RULE_ENGINE" >&2
-    exit 0
+# 运行特定引擎
+SPECIFIC_RESULT=""
+if [ -n "$RULE_ENGINE" ] && [ -f "$RULE_ENGINE" ]; then
+    SPECIFIC_RESULT=$("$PYTHON" "$RULE_ENGINE" "$FILE_PATH" 2>/dev/null)
 fi
 
-# 调用规则引擎
-RESULT=$("$PYTHON" "$RULE_ENGINE" "$FILE_PATH" 2>/dev/null)
-
-if [ -z "$RESULT" ]; then
-    exit 0
+# --- Tier 1b: auto-rules 引擎 (始终运行, 所有文件类型) ---
+AUTO_RULES="$SCRIPT_DIR/lib/lint-auto-rules.py"
+AUTO_RESULT=""
+if [ -f "$AUTO_RULES" ]; then
+    AUTO_RESULT=$("$PYTHON" "$AUTO_RULES" "$FILE_PATH" 2>/dev/null)
 fi
 
-# 解析结果
-DECISION=$(printf '%s' "$RESULT" | jq -r '.decision // "approve"' 2>/dev/null)
-REASON=$(printf '%s' "$RESULT" | jq -r '.reason // ""' 2>/dev/null)
-WARNINGS=$(printf '%s' "$RESULT" | jq -r '.warnings // [] | .[]' 2>/dev/null)
+# --- 合并结果 ---
+# 逻辑: 任一引擎 block → block; 合并所有 warnings
+FINAL_DECISION="approve"
+FINAL_REASON=""
+ALL_WARNINGS=""
 
-# 输出 warnings 到 stderr
-if [ -n "$WARNINGS" ]; then
-    ENGINE_NAME=$(basename "$RULE_ENGINE" .py | sed 's/lint-//' | sed 's/-rules//')
-    echo "" >&2
-    echo "⚠ [avoidance: $ENGINE_NAME] 检测到潜在问题 ($FILE_PATH):" >&2
-    printf '%s\n' "$WARNINGS" | while read -r line; do
-        echo "  $line" >&2
-    done
-    echo "" >&2
+# 处理特定引擎结果
+if [ -n "$SPECIFIC_RESULT" ]; then
+    S_DECISION=$(printf '%s' "$SPECIFIC_RESULT" | jq -r '.decision // "approve"' 2>/dev/null)
+    S_REASON=$(printf '%s' "$SPECIFIC_RESULT" | jq -r '.reason // ""' 2>/dev/null)
+    S_WARNINGS=$(printf '%s' "$SPECIFIC_RESULT" | jq -r '.warnings // [] | .[]' 2>/dev/null)
+
+    if [ "$S_DECISION" = "block" ]; then
+        FINAL_DECISION="block"
+        FINAL_REASON="$S_REASON"
+    fi
+
+    if [ -n "$S_WARNINGS" ]; then
+        ENGINE_NAME=$(basename "$RULE_ENGINE" .py | sed 's/lint-//' | sed 's/-rules//')
+        echo "" >&2
+        echo "⚠ [avoidance: $ENGINE_NAME] 检测到潜在问题 ($FILE_PATH):" >&2
+        printf '%s\n' "$S_WARNINGS" | while read -r line; do
+            echo "  $line" >&2
+        done
+        echo "" >&2
+        ALL_WARNINGS="$S_WARNINGS"
+    fi
 fi
 
-if [ "$DECISION" = "block" ]; then
-    printf '%s' "$RESULT"
+# 处理 auto-rules 引擎结果
+if [ -n "$AUTO_RESULT" ]; then
+    A_DECISION=$(printf '%s' "$AUTO_RESULT" | jq -r '.decision // "approve"' 2>/dev/null)
+    A_REASON=$(printf '%s' "$AUTO_RESULT" | jq -r '.reason // ""' 2>/dev/null)
+    A_WARNINGS=$(printf '%s' "$AUTO_RESULT" | jq -r '.warnings // [] | .[]' 2>/dev/null)
+
+    if [ "$A_DECISION" = "block" ]; then
+        FINAL_DECISION="block"
+        if [ -n "$FINAL_REASON" ]; then
+            FINAL_REASON="$FINAL_REASON"$'\n'"$A_REASON"
+        else
+            FINAL_REASON="$A_REASON"
+        fi
+    fi
+
+    if [ -n "$A_WARNINGS" ]; then
+        echo "" >&2
+        echo "⚠ [avoidance: auto-rules] 检测到潜在问题 ($FILE_PATH):" >&2
+        printf '%s\n' "$A_WARNINGS" | while read -r line; do
+            echo "  $line" >&2
+        done
+        echo "" >&2
+        if [ -n "$ALL_WARNINGS" ]; then
+            ALL_WARNINGS="$ALL_WARNINGS"$'\n'"$A_WARNINGS"
+        else
+            ALL_WARNINGS="$A_WARNINGS"
+        fi
+    fi
+fi
+
+# 如果有 block，输出合并后的 JSON 结果
+if [ "$FINAL_DECISION" = "block" ]; then
+    # 构造合并的 warnings JSON 数组
+    WARNINGS_JSON="[]"
+    if [ -n "$ALL_WARNINGS" ]; then
+        WARNINGS_JSON=$(printf '%s\n' "$ALL_WARNINGS" | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null)
+        if [ -z "$WARNINGS_JSON" ]; then
+            WARNINGS_JSON="[]"
+        fi
+    fi
+    printf '{"decision":"block","reason":"%s","warnings":%s}' \
+        "$(printf '%s' "$FINAL_REASON" | jq -R -s '.' | sed 's/^"//;s/"$//')" \
+        "$WARNINGS_JSON"
     exit 0
 fi
 
