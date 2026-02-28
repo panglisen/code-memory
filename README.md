@@ -342,6 +342,286 @@ weekly-consolidate.sh
         └─ 返回 top-6
 ```
 
+## 自进化系统
+
+自进化系统由四个组件组成，形成「经验写入 → 追踪反馈 → 信号检测 → 能力生成 + 规则蒸馏」的完整闭环。绝大部分自动运行，无需手动干预。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         自进化数据流                              │
+│                                                                 │
+│  会话中踩坑/纠正                                                 │
+│       │                                                         │
+│       ▼                                                         │
+│  session-summary.sh ──写入──→ MEMORY.md / rules.md              │
+│       │                            │                            │
+│       ├── memory-feedback.py       │                            │
+│       │   (记录引用+会话结果)       ▼                            │
+│       │                     rule-distiller.py                   │
+│       ├── signal-analyzer.py    (LLM 判断可否正则化)             │
+│       │   (提取信号+循环检测)       │                            │
+│       │         │                  ▼                            │
+│       │         ▼            auto-rules.json                    │
+│       │   recurring_patterns       │                            │
+│       │         │                  ▼                            │
+│       │         ▼            avoidance-gate.sh                  │
+│       │   capability-generator.py  (下次编辑时自动检测)           │
+│       │   (生成 Skill/Command)                                  │
+│       │         │                                               │
+│       │         ▼                                               │
+│       │   auto-capabilities.md                                  │
+│       │   (Claude 自动加载)                                     │
+│       │                                                         │
+│  ┌────┴────────────────────────────────────────────────┐        │
+│  │ evolution/ 数据文件                                  │        │
+│  │  audit.jsonl          — 经验引用审计日志 (append-only)│        │
+│  │  auto-rules.json      — 自动生成的检测规则配置       │        │
+│  │  generator_state.json — 能力生成器状态               │        │
+│  │  capabilities.jsonl   — 能力生成审计日志             │        │
+│  │  signal_report_latest.md — 最新信号分析报告          │        │
+│  └─────────────────────────────────────────────────────┘        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 组件一览
+
+| 组件 | 脚本 | 触发方式 | 作用 |
+|------|------|----------|------|
+| 经验追踪 | `memory-feedback.py` | SessionEnd 自动 | Laplace 平滑 + 指数衰减评估经验有效性 |
+| 信号分析 | `signal-analyzer.py` | SessionEnd 自动 | 从会话中提取 8 种信号，检测循环模式 |
+| 能力生成 | `capability-generator.py` | 周期整理/手动 | 从循环模式自动生成 Skill/Command |
+| 规则蒸馏 | `rule-distiller.py` | 写入避坑经验后自动 | 避坑经验 → 正则检测规则 (JSON 配置) |
+
+### 1. 经验有效性追踪 (memory-feedback.py)
+
+追踪每条避坑经验/规范的引用次数和成功率，使用 Laplace 平滑 + 指数衰减算法评估有效性。
+
+**自动行为** — 会话结束时自动记录会话结果，无需手动操作。
+
+**手动操作:**
+
+```bash
+# 查看有效性报告 (哪些经验被引用、成功率如何)
+python3 ~/.claude/scripts/memory-feedback.py report
+
+# JSON 格式输出 (便于程序处理)
+python3 ~/.claude/scripts/memory-feedback.py report --json
+
+# 查看低效经验候选 (有效性低于阈值)
+python3 ~/.claude/scripts/memory-feedback.py stale --threshold 0.3
+
+# 扫描 MEMORY.md 和 rules.md，注册所有经验
+python3 ~/.claude/scripts/memory-feedback.py scan
+
+# 重新计算所有经验分数
+python3 ~/.claude/scripts/memory-feedback.py recalculate
+```
+
+**算法说明:**
+
+- **Laplace 平滑**: `p = (success + 1) / (success + failure + 2)`，避免零概率
+- **指数衰减**: `weight = 0.5^(age_days / 30)`，30 天半衰期，老经验权重自动降低
+- **联合评分**: `value = p × weight`，综合评估经验价值
+
+### 2. 跨会话信号分析 (signal-analyzer.py)
+
+从会话摘要中提取信号，自动检测跨会话的循环问题。
+
+**检测的 8 种基础信号:**
+
+| 信号 | 含义 | 触发关键词 |
+|------|------|-----------|
+| `session_had_errors` | 会话出错 | 报错、失败、bug、error |
+| `user_correction` | 用户纠正 | 不要、禁止、错了、revert |
+| `capability_gap` | 能力缺口 | 不支持、缺少、无法 |
+| `recurring_issue` | 重复问题 | 又遇到、同样的、again |
+| `performance_issue` | 性能问题 | 慢、超时、timeout、OOM |
+| `architecture_decision` | 架构决策 | 架构、设计、重构 |
+| `dependency_issue` | 依赖问题 | 依赖、版本、冲突 |
+| `environment_issue` | 环境问题 | 环境、配置、JDK |
+
+**4 种复合信号** (需多个关键词同时出现): `import_path_error`、`database_schema_issue`、`test_failure`、`deployment_issue`
+
+**自动行为:**
+
+- 会话结束时 `signal-analyzer.py extract` 自动提取信号
+- 同一信号在窗口内出现 >= 3 次自动抑制 (避免噪音)
+- 循环模式出现 >= 3 次自动升级为 HIGH 优先级
+
+**手动操作:**
+
+```bash
+# 分析近 14 天信号 (生成报告到 evolution/signal_report_latest.md)
+python3 ~/.claude/scripts/signal-analyzer.py analyze --days 14
+
+# 查看活跃的循环问题
+python3 ~/.claude/scripts/signal-analyzer.py recurring
+
+# 标记循环模式为已解决
+python3 ~/.claude/scripts/signal-analyzer.py resolve --pattern-id 3 --resolution "已通过 auto-rules 解决"
+
+# 查看统计信息
+python3 ~/.claude/scripts/signal-analyzer.py stats
+
+# 从现有会话历史回填信号数据 (首次安装后使用)
+python3 ~/.claude/scripts/signal-analyzer.py backfill --days 30
+
+# 自动升级高频模式
+python3 ~/.claude/scripts/signal-analyzer.py auto-escalate
+```
+
+### 3. 能力自动生成 (capability-generator.py)
+
+从循环模式中自动生成 Claude Code Skill 或 Command。生成的能力会写入 `~/.claude/skills/` 或 `~/.claude/commands/`，并更新 `~/.claude/rules/auto-capabilities.md` 索引。
+
+**门控条件** — 必须同时满足才会触发自动生成:
+
+1. `CAPABILITY_GENERATION` 环境变量不为 `false`
+2. 距上次生成 >= 24 小时
+3. 至少 2 个 `count >= 2` 的未处理循环模式
+4. 最近 5 个会话 >= 60% 成功率
+
+**手动操作:**
+
+```bash
+# 查看生成器状态 (上次生成时间、候选模式数)
+python3 ~/.claude/scripts/capability-generator.py --status
+
+# 预览可生成的能力 (不实际写文件)
+python3 ~/.claude/scripts/capability-generator.py --dry-run
+
+# 跳过门控强制预览
+python3 ~/.claude/scripts/capability-generator.py --dry-run --force
+
+# 针对特定循环模式生成
+python3 ~/.claude/scripts/capability-generator.py --force --pattern-id 3
+
+# 执行生成 (带门控)
+python3 ~/.claude/scripts/capability-generator.py
+```
+
+### 4. 避坑经验规则蒸馏 (rule-distiller.py)
+
+将避坑经验自动转化为正则检测规则。LLM (Haiku) 判断经验是否可正则化，生成 JSON 规则配置，avoidance-gate 自动加载。
+
+**安全约束:**
+
+- 自动生成的规则 severity 一律 `warn` (不 block)，避免误报阻断编辑
+- 只有人工审核后手动改 auto-rules.json 中的 severity 为 `block` 才会强制阻断
+- `confidence < 0.7` 的规则不写入
+- 生成的 regex 必须通过 `re.compile()` 验证
+
+**自动行为** — 会话结束写入避坑经验后自动后台触发，周期整理时也会批量运行。
+
+**手动操作:**
+
+```bash
+# 预览模式 (不写入文件)
+python3 ~/.claude/scripts/rule-distiller.py --dry-run
+
+# 执行蒸馏
+python3 ~/.claude/scripts/rule-distiller.py
+
+# 强制重新分析所有经验 (跳过已处理的 hash 去重)
+python3 ~/.claude/scripts/rule-distiller.py --force
+
+# 列出已生成的规则
+python3 ~/.claude/scripts/rule-distiller.py --list
+
+# 删除指定规则
+python3 ~/.claude/scripts/rule-distiller.py --remove auto-003
+```
+
+**auto-rules.json 规则格式:**
+
+```json
+{
+  "id": "auto-001",
+  "source": "macOS bash 3.2 不支持 declare -A 关联数组",
+  "file_globs": ["*.sh"],
+  "pattern": "^\\s*declare\\s+-A\\b",
+  "pattern_flags": ["MULTILINE"],
+  "severity": "warn",
+  "message": "declare -A 在 macOS bash 3.2 中不可用",
+  "fix_hint": "使用 case 语句替代",
+  "confidence": 0.9
+}
+```
+
+### 斜杠命令 (会话内使用)
+
+| 命令 | 用途 | 示例 |
+|------|------|------|
+| `/memory-health` | 综合健康看板 | `/memory-health full` |
+| `/memory-health feedback` | 经验有效性报告 | — |
+| `/memory-health signals` | 信号分析报告 | — |
+| `/memory-health capabilities` | 能力生成状态 | — |
+| `/memory-signals` | 信号分析 | `/memory-signals analyze` |
+| `/memory-signals recurring` | 查看循环问题 | — |
+| `/memory-signals resolve 3` | 标记已解决 | — |
+| `/memory-generate` | 手动触发能力生成 | `/memory-generate --dry-run` |
+
+### 典型使用场景
+
+**场景 1: 日常开发 (全自动，无需手动操作)**
+
+正常使用 Claude Code 即可。会话结束时自动提取知识、记录信号、蒸馏规则。下次编辑文件时自动检测。
+
+**场景 2: 查看系统健康状态**
+
+```
+/memory-health
+```
+
+输出经验有效性评分、信号频率排名、循环模式清单、能力生成状态。
+
+**场景 3: 发现某个避坑经验被反复忽略**
+
+```bash
+# 1. 查看低效经验
+python3 ~/.claude/scripts/memory-feedback.py stale
+
+# 2. 检查是否已有对应的自动规则
+python3 ~/.claude/scripts/rule-distiller.py --list
+
+# 3. 如果没有，手动触发蒸馏
+python3 ~/.claude/scripts/rule-distiller.py --dry-run
+python3 ~/.claude/scripts/rule-distiller.py
+
+# 4. 如果蒸馏成功但想升级为 block，手动编辑:
+# vim ~/.claude/memory/evolution/auto-rules.json
+# 将对应规则的 "severity": "warn" 改为 "severity": "block"
+```
+
+**场景 4: 首次安装后初始化自进化数据**
+
+```bash
+# 从现有会话历史回填信号
+python3 ~/.claude/scripts/signal-analyzer.py backfill --days 30
+
+# 扫描注册所有经验
+python3 ~/.claude/scripts/memory-feedback.py scan
+
+# 运行一次完整分析
+python3 ~/.claude/scripts/signal-analyzer.py analyze --days 30
+
+# 蒸馏已有避坑经验为检测规则
+python3 ~/.claude/scripts/rule-distiller.py --dry-run
+python3 ~/.claude/scripts/rule-distiller.py
+```
+
+**场景 5: 周期整理 (weekly-consolidate.sh 自动执行)**
+
+```bash
+# 手动运行周期整理 (或配置 cron: 0 10 * * 0)
+~/.claude/scripts/weekly-consolidate.sh
+
+# 预览模式
+~/.claude/scripts/weekly-consolidate.sh --dry-run
+```
+
+周期整理会依次执行: 统计 → 搜索索引刷新 → 事实提取 → 信号分析 → 能力生成 → 规则蒸馏 → 过期清理。
+
 ## 配置说明
 
 ### Hooks 配置
