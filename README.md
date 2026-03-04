@@ -56,6 +56,7 @@
 - **自进化系统** — 经验有效性追踪 (Laplace 平滑 + 指数衰减)、跨会话信号分析 (循环问题检测)、能力自动生成 (从循环模式自动生成 Skill/Command)
 - **避坑规则自动拦截** — PostToolUse Hook 编辑后自动检测代码反模式 (antd v3、Java SQL、Shell/Python 兼容性)，Tier 2 可选 LLM 语义检测
 - **避坑经验规则蒸馏** — 新避坑经验写入后，LLM 自动判断可否正则化，生成 JSON 规则配置，avoidance-gate 自动加载检测
+- **业务影响域分析** — `/impact` 输入需求关键词，自动加载业务场景文档，结合代码 Grep 动态验证，输出改动影响域 checklist
 - **斜杠命令** — `/memory-add`, `/memory-learn`, `/memory-avoid`, `/memory-summarize`, `/memory-health`, `/memory-signals`, `/memory-generate`
 - **DB Schema 提取** — ast-grep + sqlglot 从 Java 代码提取 JOIN/DAO，MySQL 表结构按前缀分组
 - **零外部服务** — 纯文件系统 + SQLite，不依赖任何云服务或数据库
@@ -167,6 +168,9 @@ code-memory/
 │       ├── lint-shell-rules.py        # 规则引擎: Shell bash 3.2 兼容
 │       ├── lint-python-rules.py       # 规则引擎: Python 3.9 兼容
 │       └── lint-auto-rules.py        # 规则引擎: 自动生成规则 (读取 auto-rules.json)
+├── skills/
+│   └── impact-analysis/
+│       └── SKILL.md                   # /impact 业务影响域分析
 ├── commands/
 │   ├── memory-add.md                  # /memory-add 添加原子事实
 │   ├── memory-learn.md                # /memory-learn 学习代码模式
@@ -185,7 +189,9 @@ code-memory/
     ├── MEMORY.md                      # 隐性知识模板
     ├── project-summary.md             # 项目 summary 模板
     ├── project-facts.json             # facts.json 空模板
-    └── daily.md                       # 每日笔记模板
+    ├── daily.md                       # 每日笔记模板
+    ├── domain-index.md                # 业务域索引模板
+    └── domain-scenario.md             # 业务场景文档模板
 ```
 
 ## 工作原理
@@ -548,6 +554,35 @@ python3 ~/.claude/scripts/rule-distiller.py --remove auto-003
 }
 ```
 
+### 业务影响域分析 (/impact)
+
+开发前快速定位需求涉及哪些服务、表、MQ、调用链和联动点。
+
+**原理:**
+1. 读取 `areas/domains/index.md` 索引，匹配需求关键词到业务域
+2. 加载对应 `domains/{域}/scenario.md` 获取业务架构地图
+3. 用 scenario.md 中的搜索关键词 Grep 实际代码，动态验证文件位置
+4. 输出结构化的影响域 checklist（含已验证和需确认的联动点）
+
+**使用方式:**
+```
+/impact 标签          # 分析标签相关需求的影响域
+/impact 订单 退款     # 分析订单退款的影响域
+```
+
+**创建业务域文档:**
+```bash
+# 1. 编辑索引，添加关键词映射
+vim ~/.claude/memory/areas/domains/index.md
+
+# 2. 创建场景文档 (参考 templates/domain-scenario.md)
+mkdir -p ~/.claude/memory/areas/domains/my-domain
+cp templates/domain-scenario.md ~/.claude/memory/areas/domains/my-domain/scenario.md
+vim ~/.claude/memory/areas/domains/my-domain/scenario.md
+```
+
+关键设计: scenario.md 只记录**不变的业务架构**（流程、职责、表、调用链），具体代码位置通过 Grep **动态定位**。
+
 ### 斜杠命令 (会话内使用)
 
 | 命令 | 用途 | 示例 |
@@ -777,6 +812,7 @@ python3 ~/.claude/scripts/extract-schema.py \
 - [ ] **Web UI 可视化** — 知识图谱浏览器，可视化 facts 关联和时间线
 - [ ] **多用户/团队共享** — 支持团队级知识库，个人记忆与团队记忆分层
 - [ ] **工作流集成** — 集成一些比较成熟的规范开发工具：bmad
+- [x] **业务影响域分析** — `/impact` Skill 从需求关键词定位业务场景文档，结合代码 Grep 动态验证输出改动影响域 checklist
 - [ ] **超级工厂** — agent集群模式下的多角色全自动开发
 - [ ] **提取sql扩展** — 扩展从mybatis的xml中提取sql
 - [x] **自进化系统** — 经验反馈闭环 + 跨会话信号分析 + 能力自动生成

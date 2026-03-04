@@ -95,6 +95,14 @@ if [ "$1" = "--uninstall" ]; then
         fi
     done
 
+    # Skills
+    for skill_name in impact-analysis; do
+        if [ -d "$CLAUDE_DIR/skills/$skill_name" ]; then
+            rm -rf "$CLAUDE_DIR/skills/$skill_name"
+            ok "删除 skills/$skill_name"
+        fi
+    done
+
     echo ""
     warn "记忆数据 (~/.claude/memory/) 已保留，如需删除请手动执行:"
     echo "  rm -rf ~/.claude/memory"
@@ -175,7 +183,8 @@ info "创建目录结构..."
 mkdir -p "$SCRIPTS_DIR/lib"
 mkdir -p "$COMMANDS_DIR"
 mkdir -p "$RULES_DIR"
-mkdir -p "$MEMORY_DIR"/{daily,sessions,evolution,areas/{projects,patterns,tools}}
+mkdir -p "$MEMORY_DIR"/{daily,sessions,evolution,areas/{projects,patterns,tools,domains}}
+mkdir -p "$CLAUDE_DIR/skills"
 
 ok "目录结构就绪"
 echo ""
@@ -222,6 +231,7 @@ info "初始化模板文件 (已有文件不覆盖)..."
 
 copy_if_not_exists "$SCRIPT_DIR/templates/MEMORY.md" "$MEMORY_DIR/MEMORY.md"
 copy_if_not_exists "$SCRIPT_DIR/config/project-config.example.json" "$MEMORY_DIR/config.json"
+copy_if_not_exists "$SCRIPT_DIR/templates/domain-index.md" "$MEMORY_DIR/areas/domains/index.md"
 
 # 初始化 auto-rules.json (自动规则蒸馏数据文件)
 AUTO_RULES_FILE="$MEMORY_DIR/evolution/auto-rules.json"
@@ -230,6 +240,18 @@ if [ ! -f "$AUTO_RULES_FILE" ]; then
     ok "auto-rules.json (初始化空规则)"
 else
     warn "auto-rules.json 已存在，跳过 (不覆盖)"
+fi
+
+# 安装 Skills
+info "安装 Skills → ~/.claude/skills/"
+SKILLS_DIR="$CLAUDE_DIR/skills"
+if [ -d "$SCRIPT_DIR/skills" ]; then
+    for skill_dir in "$SCRIPT_DIR"/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name=$(basename "$skill_dir")
+        mkdir -p "$SKILLS_DIR/$skill_name"
+        copy_file "$skill_dir/SKILL.md" "$SKILLS_DIR/$skill_name/SKILL.md"
+    done
 fi
 echo ""
 

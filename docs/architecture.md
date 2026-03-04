@@ -25,6 +25,10 @@ areas/
 ├── patterns/{name}/       # 代码模式
 │   ├── summary.md         # 模式描述和适用场景
 │   └── facts.json
+├── domains/               # 业务域知识
+│   ├── index.md           # 关键词→场景文件映射
+│   └── {domain}/
+│       └── scenario.md    # 业务场景文档 (流程+服务+表+调用链+checklist)
 └── tools/{name}/          # 工具经验
     ├── summary.md         # 工具使用技巧
     └── facts.json
@@ -91,6 +95,7 @@ areas/
 | 涉及项目架构 | `projects/{项目}/summary.md` |
 | 涉及数据库 | `projects/shared-db/schema-index.md` |
 | 提到具体表名 | `prefix-map.json` → `schema/{前缀}.md` |
+| 涉及业务需求分析、影响分析 | `domains/index.md` → `domains/{域}/scenario.md` |
 | 用户问"记忆系统状态" | `memory-feedback.py report` |
 | 用户问"循环问题" | `signal-analyzer.py recurring` |
 | 用户问"能力生成" | `capability-generator.py --status` |
